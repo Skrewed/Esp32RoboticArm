@@ -1,86 +1,79 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESP32Servo.h>
+#include <driver/i2s.h>
 
 /*
   ============================================================
-  API DE TESTES DO BRACO ROBOTICO
-  ESP32 + COMANDOS DIRETOS PELO NAVEGADOR
+  BRAÇO ROBÓTICO ESP32 - FIRMWARE REFATORADO V8.0
+  7 SERVO MOTORES + CONVERSOR SN74HCT245N
+  ÁUDIO I2S: 2x INMP441 (ENTRADA) + MAX98357A (SAÍDA)
+  COMUNICAÇÃO HTTP REST + STREAMING DE ÁUDIO & MOVIMENTO
   ============================================================
+  
+  Mapeamento de Pinos Padrão (Conforme Descritivo Técnico):
+  Servos MG90S:
+    #1 D13 -> Garra Abertura (HCT245 A1>B1, pinos 2 e 18)
+    #2 D14 -> Garra Rotação  (HCT245 A2>B2, pinos 3 e 17)
+    #3 D18 -> Ombro Slave    (HCT245 A6>B6, pinos 7 e 13)
+    #4 D19 -> Punho          (HCT245 A7>B7, pinos 8 e 12)
 
-  Esta versao foi criada para testes e demonstracoes.
+  Servos MG996R:
+    #1 D27 -> Ombro Master   (HCT245 A3>B3, pinos 4 e 16)
+    #2 D26 -> Cotovelo       (HCT245 A4>B4, pinos 5 e 15)
+    #3 D25 -> Base Rotação   (HCT245 A5>B5, pinos 6 e 14)
 
-  Comunicacao:
-  Navegador -> requisicao HTTP GET -> ESP32 -> PWM -> HCT245 -> servos
+  Microfones INMP441 (I2S Canal 0 - Entrada):
+    WS  -> GPIO 33
+    SCK -> GPIO 32
+    SD  -> GPIO 35 (Input Only)
 
-  Exemplos:
-  http://192.168.4.1/status
-  http://192.168.4.1/habilitar
-  http://192.168.4.1/servo?motor=punho&angle=90
-  http://192.168.4.1/desabilitar
-
-  IMPORTANTE:
-  - Nenhum servo e inicializado automaticamente no setup.
-  - Nenhum movimento e executado ao ligar.
-  - O sistema precisa ser habilitado antes dos movimentos.
+  Alto-falante MAX98357A (I2S Canal 1 - Saída):
+    LRC  -> GPIO 21
+    BCLK -> GPIO 22
+    DIN  -> GPIO 23
+  ============================================================
 */
 
-// ============================================================
-// CONFIGURACAO DO WI-FI
-// ============================================================
+// ==============================================================================
+//  >>> CONFIGURAÇÕES DE REDE & IP DO ESP32 (ALTERE AQUI ANTES DE FAZER O FLASH) <<<
+// ==============================================================================
 
-const char* AP_SSID = "BRACO_TESTE";
-const char* AP_PASSWORD = "12345678";
+// 1. CONEXÃO COM SEU ROTEADOR WI-FI (MODO STATION)
+// Coloque o nome da sua rede (2.4 GHz) e a senha para o ESP32 conectar no seu roteador:
+const char* STA_SSID     = "SUA_REDE_WIFI";       // <-- NOME DO SEU WI-FI (2.4GHz)
+const char* STA_PASSWORD = "SUA_SENHA_WIFI";     // <-- SENHA DO SEU WI-FI
 
-IPAddress AP_IP(192, 168, 4, 1);
-IPAddress AP_GATEWAY(192, 168, 4, 1);
-IPAddress AP_SUBNET(255, 255, 255, 0);
+// Defina 'true' para fixar o IP do ESP32 na sua rede local, ou 'false' para obter IP dinâmico via DHCP:
+const bool  USAR_IP_ESTATICO_STA = true;
+
+// IP Estático desejado para o ESP32 na sua rede local:
+IPAddress   ESP32_IP_FIXO(192, 168, 1, 150);      // <--- DEFINE O IP DO ESP32 AQUI (ex: 192.168.1.150)
+IPAddress   ESP32_GATEWAY(192, 168, 1, 1);        // <--- IP DO SEU ROTEADOR (GATEWAY)
+IPAddress   ESP32_SUBNET(255, 255, 255, 0);       // <--- MÁSCARA DE REDE (Padrão: 255.255.255.0)
+IPAddress   ESP32_DNS(8, 8, 8, 8);                // <--- SERVIDOR DNS
+
+// 2. REDE WI-FI PRÓPRIA CRIADA PELO ESP32 (MODO ACCESS POINT - AP)
+// Caso o roteador não esteja disponível, o ESP32 gera sua própria rede direta:
+const char* AP_SSID      = "BRACO_ESP32_AP";
+const char* AP_PASSWORD  = "12345678";
+IPAddress   AP_IP(192, 168, 4, 1);                // <--- IP padrão do ESP32 no modo Ponto de Acesso
+IPAddress   AP_GATEWAY(192, 168, 4, 1);
+IPAddress   AP_SUBNET(255, 255, 255, 0);
 
 WebServer server(80);
+// ==============================================================================
 
 // ============================================================
-// CONFIGURACAO GERAL
+// CONFIGURAÇÃO GERAL E SERVOS
 // ============================================================
 
 const int FREQUENCIA_SERVO_HZ = 50;
-const int VELOCIDADE_PADRAO = 50;
+const int VELOCIDADE_PADRAO = 60;
 
-bool sistemaHabilitado = false;
-
-// Os dois servos do ombro ficam de frente um para o outro.
+bool sistemaHabilitado = true; // Habilitado para resposta imediata
 const bool OMBRO_INVERTIDO = true;
-
-// Ajuste fino para alinhar mecanicamente o servo slave.
-const int OFFSET_OMBRO_SLAVE = 0;
-
-// ============================================================
-// PINOS DOS SERVOS
-// ============================================================
-
-const int PINO_GARRA_ABERTURA = 13;
-const int PINO_GARRA_ROTACAO  = 14;
-const int PINO_PUNHO          = 19;
-
-const int PINO_COTOVELO       = 26;
-const int PINO_OMBRO_MASTER   = 27;
-const int PINO_OMBRO_SLAVE    = 18;
-const int PINO_BASE_ROTACAO   = 25;
-
-// ============================================================
-// OBJETOS DOS SERVOS
-// ============================================================
-
-Servo servoGarraAbertura;
-Servo servoGarraRotacao;
-Servo servoPunho;
-Servo servoCotovelo;
-Servo servoOmbroMaster;
-Servo servoOmbroSlave;
-Servo servoBaseRotacao;
-
-// ============================================================
-// IDENTIFICADORES
-// ============================================================
+int offsetOmbroSlave = 0;
 
 enum MotorId {
   GARRA_ABERTURA = 0,
@@ -93,531 +86,203 @@ enum MotorId {
   TOTAL_MOTORES
 };
 
-// ============================================================
-// ESTRUTURA DOS MOTORES
-// ============================================================
-
 struct Motor {
-  Servo* driver;
-
+  Servo driver;
   const char* nome;
   uint8_t pino;
-
   int anguloMinimo;
   int anguloMaximo;
-
   int pulsoMinimoUs;
   int pulsoMaximoUs;
-
   bool anexado;
-
   int anguloAtual;
   int anguloAlvo;
   int velocidade;
-
   unsigned long ultimoPassoMs;
 };
 
-// Os MG90S usam inicialmente uma faixa conservadora de pulso.
-// Os valores podem ser calibrados posteriormente.
+// Posição Home Personalizável
+struct HomeConfig {
+  int base_rotacao;
+  int ombro;
+  int cotovelo;
+  int punho;
+  int garra_rotacao;
+  int garra_abertura;
+} posHome = { 90, 90, 90, 90, 90, 90 };
 
 Motor motores[TOTAL_MOTORES] = {
-  {
-    &servoGarraAbertura,
-    "garra_abertura",
-    PINO_GARRA_ABERTURA,
-    45,
-    135,
-    1000,
-    2000,
-    false,
-    90,
-    90,
-    VELOCIDADE_PADRAO,
-    0
-  },
-  {
-    &servoGarraRotacao,
-    "garra_rotacao",
-    PINO_GARRA_ROTACAO,
-    0,
-    180,
-    1000,
-    2000,
-    false,
-    90,
-    90,
-    VELOCIDADE_PADRAO,
-    0
-  },
-  {
-    &servoPunho,
-    "punho",
-    PINO_PUNHO,
-    0,
-    180,
-    1000,
-    2000,
-    false,
-    90,
-    90,
-    VELOCIDADE_PADRAO,
-    0
-  },
-  {
-    &servoCotovelo,
-    "cotovelo",
-    PINO_COTOVELO,
-    0,
-    180,
-    500,
-    2500,
-    false,
-    90,
-    90,
-    VELOCIDADE_PADRAO,
-    0
-  },
-  {
-    &servoOmbroMaster,
-    "ombro_master",
-    PINO_OMBRO_MASTER,
-    0,
-    180,
-    500,
-    2500,
-    false,
-    90,
-    90,
-    VELOCIDADE_PADRAO,
-    0
-  },
-  {
-    &servoOmbroSlave,
-    "ombro_slave",
-    PINO_OMBRO_SLAVE,
-    0,
-    180,
-    500,
-    2500,
-    false,
-    90,
-    90,
-    VELOCIDADE_PADRAO,
-    0
-  },
-  {
-    &servoBaseRotacao,
-    "base_rotacao",
-    PINO_BASE_ROTACAO,
-    0,
-    180,
-    500,
-    2500,
-    false,
-    90,
-    90,
-    VELOCIDADE_PADRAO,
-    0
-  }
+  { Servo(), "garra_abertura", 13, 45, 135, 1000, 2000, false, 90, 90, VELOCIDADE_PADRAO, 0 },
+  { Servo(), "garra_rotacao",  14, 0,  180, 1000, 2000, false, 90, 90, VELOCIDADE_PADRAO, 0 },
+  { Servo(), "punho",          19, 35, 145, 1000, 2000, false, 90, 90, VELOCIDADE_PADRAO, 0 },
+  { Servo(), "cotovelo",       26, 25, 105,  500, 2500, false, 90, 90, VELOCIDADE_PADRAO, 0 },
+  { Servo(), "ombro_master",   27, 35, 145,  500, 2500, false, 90, 90, VELOCIDADE_PADRAO, 0 },
+  { Servo(), "ombro_slave",    18, 35, 145,  500, 2500, false, 90, 90, VELOCIDADE_PADRAO, 0 },
+  { Servo(), "base_rotacao",   25, 15, 165,  500, 2500, false, 90, 90, VELOCIDADE_PADRAO, 0 }
 };
 
 // ============================================================
-// POSICAO CENTRAL DE TESTE
-// ============================================================
-//
-// Esta ainda nao e a posicao de descanso definitiva.
-// Estes valores servem apenas como referencia durante os testes.
-
-const int CENTRO_GARRA_ABERTURA = 90;
-const int CENTRO_GARRA_ROTACAO  = 90;
-const int CENTRO_PUNHO          = 90;
-const int CENTRO_COTOVELO       = 90;
-const int CENTRO_OMBRO          = 90;
-const int CENTRO_BASE_ROTACAO   = 90;
-
-// ============================================================
-// FUNCOES HTTP
+// CONFIGURAÇÃO DO I2S (MICROFONE INMP441 + ALTO-FALANTE MAX98357A)
 // ============================================================
 
-void adicionarCors() {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
-  server.sendHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
-}
+#define I2S_SAMPLE_RATE 16000
 
-void enviarJson(int statusHttp, const String& json) {
-  adicionarCors();
-  server.send(statusHttp, "application/json", json);
-}
+// Canal 0: Entrada (2x INMP441 Microfones Estéreo)
+#define I2S_MIC_PORT I2S_NUM_0
+#define PIN_I2S_MIC_WS  33
+#define PIN_I2S_MIC_SCK 32
+#define PIN_I2S_MIC_SD  35
 
-void enviarErro(
-  int statusHttp,
-  const String& codigo,
-  const String& mensagem
-) {
-  String json = "{";
+// Canal 1: Saída (MAX98357A Amplificador)
+#define I2S_SPK_PORT I2S_NUM_1
+#define PIN_I2S_SPK_LRC  21
+#define PIN_I2S_SPK_BCLK 22
+#define PIN_I2S_SPK_DIN  23
 
-  json += "\"sucesso\":false,";
-  json += "\"erro\":\"" + codigo + "\",";
-  json += "\"mensagem\":\"" + mensagem + "\"";
+bool i2sIniciado = false;
 
-  json += "}";
+void configurarI2S() {
+  // 1. Configuração do Microfone INMP441 (I2S_NUM_0)
+  i2s_config_t i2s_mic_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = I2S_SAMPLE_RATE,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 4,
+    .dma_buf_len = 512,
+    .use_apll = false,
+    .tx_desc_auto_clear = false,
+    .fixed_mclk = 0
+  };
 
-  enviarJson(statusHttp, json);
-}
+  i2s_pin_config_t mic_pins = {
+    .bck_io_num = PIN_I2S_MIC_SCK,
+    .ws_io_num = PIN_I2S_MIC_WS,
+    .data_out_num = I2S_PIN_NO_CHANGE,
+    .data_in_num = PIN_I2S_MIC_SD
+  };
 
-void enviarSucesso(
-  const String& mensagem,
-  int statusHttp = 200
-) {
-  String json = "{";
-
-  json += "\"sucesso\":true,";
-  json += "\"mensagem\":\"" + mensagem + "\"";
-
-  json += "}";
-
-  enviarJson(statusHttp, json);
-}
-
-// ============================================================
-// VALIDACAO DE NUMEROS
-// ============================================================
-
-bool textoEhNumero(const String& texto) {
-  if (texto.length() == 0) {
-    return false;
+  esp_err_t errMic = i2s_driver_install(I2S_MIC_PORT, &i2s_mic_config, 0, NULL);
+  if (errMic == ESP_OK) {
+    i2s_set_pin(I2S_MIC_PORT, &mic_pins);
   }
 
-  for (unsigned int i = 0; i < texto.length(); i++) {
-    if (!isDigit(texto[i])) {
-      return false;
-    }
+  // 2. Configuração do Alto-falante MAX98357A (I2S_NUM_1)
+  i2s_config_t i2s_spk_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate = I2S_SAMPLE_RATE,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 4,
+    .dma_buf_len = 512,
+    .use_apll = false,
+    .tx_desc_auto_clear = true,
+    .fixed_mclk = 0
+  };
+
+  i2s_pin_config_t spk_pins = {
+    .bck_io_num = PIN_I2S_SPK_BCLK,
+    .ws_io_num = PIN_I2S_SPK_LRC,
+    .data_out_num = PIN_I2S_SPK_DIN,
+    .data_in_num = I2S_PIN_NO_CHANGE
+  };
+
+  esp_err_t errSpk = i2s_driver_install(I2S_SPK_PORT, &i2s_spk_config, 0, NULL);
+  if (errSpk == ESP_OK) {
+    i2s_set_pin(I2S_SPK_PORT, &spk_pins);
   }
 
-  return true;
-}
-
-bool lerNumero(
-  const String& texto,
-  int minimo,
-  int maximo,
-  int& resultado
-) {
-  if (!textoEhNumero(texto)) {
-    return false;
-  }
-
-  resultado = texto.toInt();
-
-  return resultado >= minimo && resultado <= maximo;
+  i2sIniciado = (errMic == ESP_OK && errSpk == ESP_OK);
+  Serial.printf("I2S Inicializado: Mic=%d, Spk=%d\n", errMic, errSpk);
 }
 
 // ============================================================
-// CONTROLE DOS SERVOS
+// CONTROLE DE SERVOS
 // ============================================================
 
 int limitarAngulo(int motorId, int angulo) {
-  return constrain(
-    angulo,
-    motores[motorId].anguloMinimo,
-    motores[motorId].anguloMaximo
-  );
+  return constrain(angulo, motores[motorId].anguloMinimo, motores[motorId].anguloMaximo);
 }
 
 int converterAnguloParaPulso(int motorId, int angulo) {
   angulo = limitarAngulo(motorId, angulo);
-
-  return map(
-    angulo,
-    motores[motorId].anguloMinimo,
-    motores[motorId].anguloMaximo,
-    motores[motorId].pulsoMinimoUs,
-    motores[motorId].pulsoMaximoUs
-  );
+  return map(angulo, motores[motorId].anguloMinimo, motores[motorId].anguloMaximo,
+             motores[motorId].pulsoMinimoUs, motores[motorId].pulsoMaximoUs);
 }
 
 void escreverAngulo(int motorId, int angulo) {
   int pulso = converterAnguloParaPulso(motorId, angulo);
-
-  motores[motorId].driver->writeMicroseconds(pulso);
+  motores[motorId].driver.writeMicroseconds(pulso);
 }
 
-void anexarMotorSeNecessario(
-  int motorId,
-  int primeiroAngulo
-) {
-  if (motores[motorId].anexado) {
-    return;
-  }
+void anexarMotorSeNecessario(int motorId, int primeiroAngulo) {
+  if (motores[motorId].anexado) return;
 
-  primeiroAngulo = limitarAngulo(
-    motorId,
-    primeiroAngulo
-  );
-
-  motores[motorId].driver->setPeriodHertz(
-    FREQUENCIA_SERVO_HZ
-  );
-
-  motores[motorId].driver->attach(
-    motores[motorId].pino,
-    500,
-    2500
-  );
+  primeiroAngulo = limitarAngulo(motorId, primeiroAngulo);
+  motores[motorId].driver.setPeriodHertz(FREQUENCIA_SERVO_HZ);
+  motores[motorId].driver.attach(motores[motorId].pino, 500, 2500);
 
   motores[motorId].anexado = true;
   motores[motorId].anguloAtual = primeiroAngulo;
   motores[motorId].anguloAlvo = primeiroAngulo;
   motores[motorId].ultimoPassoMs = millis();
-
-  escreverAngulo(
-    motorId,
-    primeiroAngulo
-  );
-
-  Serial.print("Servo anexado: ");
-  Serial.print(motores[motorId].nome);
-  Serial.print(" | GPIO ");
-  Serial.print(motores[motorId].pino);
-  Serial.print(" | Angulo ");
-  Serial.println(primeiroAngulo);
+  escreverAngulo(motorId, primeiroAngulo);
 }
 
-void definirAlvoMotor(
-  int motorId,
-  int angulo,
-  int velocidade
-) {
-  angulo = limitarAngulo(
-    motorId,
-    angulo
-  );
-
-  velocidade = constrain(
-    velocidade,
-    1,
-    180
-  );
+void definirAlvoMotor(int motorId, int angulo, int velocidade) {
+  angulo = limitarAngulo(motorId, angulo);
+  velocidade = constrain(velocidade, 1, 180);
 
   if (!motores[motorId].anexado) {
-    /*
-      No primeiro comando, o servo recebe diretamente
-      a posicao solicitada.
-
-      Como os servos nao possuem sensores de retorno,
-      o ESP32 nao conhece a posicao fisica anterior.
-    */
-    anexarMotorSeNecessario(
-      motorId,
-      angulo
-    );
-
+    anexarMotorSeNecessario(motorId, angulo);
     return;
   }
-
   motores[motorId].anguloAlvo = angulo;
   motores[motorId].velocidade = velocidade;
 }
 
 int calcularAnguloOmbroSlave(int anguloMaster) {
-  int anguloSlave;
-
-  if (OMBRO_INVERTIDO) {
-    anguloSlave = 180 - anguloMaster;
-  } else {
-    anguloSlave = anguloMaster;
-  }
-
-  anguloSlave += OFFSET_OMBRO_SLAVE;
-
-  return limitarAngulo(
-    OMBRO_SLAVE,
-    anguloSlave
-  );
+  int anguloSlave = OMBRO_INVERTIDO ? (180 - anguloMaster) : anguloMaster;
+  anguloSlave += offsetOmbroSlave;
+  return limitarAngulo(OMBRO_SLAVE, anguloSlave);
 }
 
-void definirAlvoOmbro(
-  int angulo,
-  int velocidade
-) {
-  int master = limitarAngulo(
-    OMBRO_MASTER,
-    angulo
-  );
-
+void definirAlvoOmbro(int angulo, int velocidade) {
+  int master = limitarAngulo(OMBRO_MASTER, angulo);
   int slave = calcularAnguloOmbroSlave(master);
-
-  definirAlvoMotor(
-    OMBRO_MASTER,
-    master,
-    velocidade
-  );
-
-  definirAlvoMotor(
-    OMBRO_SLAVE,
-    slave,
-    velocidade
-  );
-}
-
-int encontrarMotorPublico(String nome) {
-  nome.trim();
-  nome.toLowerCase();
-
-  if (nome == "garra_abertura" || nome == "garra") {
-    return GARRA_ABERTURA;
-  }
-
-  if (nome == "garra_rotacao") {
-    return GARRA_ROTACAO;
-  }
-
-  if (nome == "punho") {
-    return PUNHO;
-  }
-
-  if (nome == "cotovelo") {
-    return COTOVELO;
-  }
-
-  if (nome == "base" || nome == "base_rotacao") {
-    return BASE_ROTACAO;
-  }
-
-  return -1;
-}
-
-bool obterLimitesPublicos(
-  const String& nome,
-  int& minimo,
-  int& maximo
-) {
-  if (nome == "ombro") {
-    minimo = motores[OMBRO_MASTER].anguloMinimo;
-    maximo = motores[OMBRO_MASTER].anguloMaximo;
-
-    return true;
-  }
-
-  int motorId = encontrarMotorPublico(nome);
-
-  if (motorId < 0) {
-    return false;
-  }
-
-  minimo = motores[motorId].anguloMinimo;
-  maximo = motores[motorId].anguloMaximo;
-
-  return true;
-}
-
-bool aplicarComando(
-  String nome,
-  int angulo,
-  int velocidade,
-  String& erro
-) {
-  nome.trim();
-  nome.toLowerCase();
-
-  int minimo;
-  int maximo;
-
-  if (!obterLimitesPublicos(nome, minimo, maximo)) {
-    erro = "Servo desconhecido: " + nome;
-    return false;
-  }
-
-  if (angulo < minimo || angulo > maximo) {
-    erro =
-      "Angulo invalido para " +
-      nome +
-      ". Limite: " +
-      String(minimo) +
-      " a " +
-      String(maximo);
-
-    return false;
-  }
-
-  if (nome == "ombro") {
-    definirAlvoOmbro(
-      angulo,
-      velocidade
-    );
-
-    return true;
-  }
-
-  int motorId = encontrarMotorPublico(nome);
-
-  definirAlvoMotor(
-    motorId,
-    angulo,
-    velocidade
-  );
-
-  return true;
+  definirAlvoMotor(OMBRO_MASTER, master, velocidade);
+  definirAlvoMotor(OMBRO_SLAVE, slave, velocidade);
 }
 
 void atualizarMovimentos() {
   unsigned long agora = millis();
-
   for (int i = 0; i < TOTAL_MOTORES; i++) {
-    if (!motores[i].anexado) {
+    if (!motores[i].anexado || motores[i].anguloAtual == motores[i].anguloAlvo) {
       continue;
     }
-
-    if (
-      motores[i].anguloAtual ==
-      motores[i].anguloAlvo
-    ) {
+    int vel = max(1, motores[i].velocidade);
+    unsigned long intervalo = max(4UL, 1000UL / (unsigned long)vel);
+    if (agora - motores[i].ultimoPassoMs < intervalo) {
       continue;
     }
-
-    int velocidade = max(
-      1,
-      motores[i].velocidade
-    );
-
-    unsigned long intervalo =
-      max(
-        5UL,
-        1000UL / (unsigned long)velocidade
-      );
-
-    if (
-      agora - motores[i].ultimoPassoMs <
-      intervalo
-    ) {
-      continue;
-    }
-
     motores[i].ultimoPassoMs = agora;
-
-    if (
-      motores[i].anguloAtual <
-      motores[i].anguloAlvo
-    ) {
+    if (motores[i].anguloAtual < motores[i].anguloAlvo) {
       motores[i].anguloAtual++;
     } else {
       motores[i].anguloAtual--;
     }
-
-    escreverAngulo(
-      i,
-      motores[i].anguloAtual
-    );
+    escreverAngulo(i, motores[i].anguloAtual);
   }
 }
 
 void pararMovimentos() {
   for (int i = 0; i < TOTAL_MOTORES; i++) {
     if (motores[i].anexado) {
-      motores[i].anguloAlvo =
-        motores[i].anguloAtual;
+      motores[i].anguloAlvo = motores[i].anguloAtual;
     }
   }
 }
@@ -625,603 +290,234 @@ void pararMovimentos() {
 void desanexarTodos() {
   for (int i = 0; i < TOTAL_MOTORES; i++) {
     if (motores[i].anexado) {
-      motores[i].driver->detach();
+      motores[i].driver.detach();
+      motores[i].anexado = false;
     }
-
-    motores[i].anexado = false;
-    motores[i].anguloAtual = 90;
-    motores[i].anguloAlvo = 90;
-
-    pinMode(
-      motores[i].pino,
-      OUTPUT
-    );
-
-    digitalWrite(
-      motores[i].pino,
-      LOW
-    );
+    pinMode(motores[i].pino, OUTPUT);
+    digitalWrite(motores[i].pino, LOW);
   }
 }
 
-void prepararPinosSemPWM() {
+void anexarTodosNaHome() {
+  definirAlvoMotor(BASE_ROTACAO, posHome.base_rotacao, 35);
+  definirAlvoOmbro(posHome.ombro, 35);
+  definirAlvoMotor(COTOVELO, posHome.cotovelo, 35);
+  definirAlvoMotor(PUNHO, posHome.punho, 35);
+  definirAlvoMotor(GARRA_ROTACAO, posHome.garra_rotacao, 35);
+  definirAlvoMotor(GARRA_ABERTURA, posHome.garra_abertura, 35);
+}
+
+// ============================================================
+// REMAPEAMENTO DINÂMICO DE PINOS
+// ============================================================
+
+void remapearPino(int motorId, uint8_t novoPino) {
+  if (motorId < 0 || motorId >= TOTAL_MOTORES) return;
+  if (motores[motorId].pino == novoPino) return;
+
+  if (motores[motorId].anexado) {
+    motores[motorId].driver.detach();
+    motores[motorId].anexado = false;
+  }
+  motores[motorId].pino = novoPino;
+  pinMode(novoPino, OUTPUT);
+  digitalWrite(novoPino, LOW);
+  anexarMotorSeNecessario(motorId, motores[motorId].anguloAtual);
+}
+
+// ============================================================
+// RESPOSTAS JSON E CORS
+// ============================================================
+
+void adicionarCors() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "Content-Type, Content-Length");
+}
+
+void enviarJson(int statusHttp, const String& json) {
+  adicionarCors();
+  server.send(statusHttp, "application/json", json);
+}
+
+// ============================================================
+// ROTAS HTTP
+// ============================================================
+// TELEMETRIA ULTRA-RÁPIDA (30-50Hz) PARA SINCRONISMO 3D
+// ============================================================
+
+void handleTelemetry() {
+  adicionarCors();
+  bool emMovimento = false;
   for (int i = 0; i < TOTAL_MOTORES; i++) {
-    pinMode(
-      motores[i].pino,
-      OUTPUT
-    );
-
-    digitalWrite(
-      motores[i].pino,
-      LOW
-    );
+    if (motores[i].anexado && motores[i].anguloAtual != motores[i].anguloAlvo) {
+      emMovimento = true;
+      break;
+    }
   }
-}
-
-// ============================================================
-// STATUS
-// ============================================================
-
-String gerarStatusJson() {
-  String json = "{";
-
-  json += "\"sucesso\":true,";
-  json += "\"sistema\":\"braco_robotico_teste\",";
-  json += "\"versao\":\"teste_get_v1\",";
-  json += "\"ip\":\"";
-  json += WiFi.softAPIP().toString();
-  json += "\",";
-  json += "\"habilitado\":";
-  json += sistemaHabilitado ? "true" : "false";
-  json += ",";
-  json += "\"tempo_ativo_ms\":";
-  json += String(millis());
-  json += ",";
-  json += "\"motores\":[";
-
-  for (int i = 0; i < TOTAL_MOTORES; i++) {
-    if (i > 0) {
-      json += ",";
-    }
-
-    json += "{";
-
-    json += "\"nome\":\"";
-    json += motores[i].nome;
-    json += "\",";
-
-    json += "\"pino\":";
-    json += String(motores[i].pino);
-    json += ",";
-
-    json += "\"anexado\":";
-    json += motores[i].anexado ? "true" : "false";
-    json += ",";
-
-    json += "\"minimo\":";
-    json += String(motores[i].anguloMinimo);
-    json += ",";
-
-    json += "\"maximo\":";
-    json += String(motores[i].anguloMaximo);
-    json += ",";
-
-    json += "\"atual\":";
-
-    if (motores[i].anexado) {
-      json += String(motores[i].anguloAtual);
-    } else {
-      json += "null";
-    }
-
-    json += ",";
-
-    json += "\"alvo\":";
-
-    if (motores[i].anexado) {
-      json += String(motores[i].anguloAlvo);
-    } else {
-      json += "null";
-    }
-
-    json += "}";
-
-  }
-
-  json += "]";
-  json += "}";
-
-  return json;
-}
-
-// ============================================================
-// PAGINA INICIAL
-// ============================================================
-
-const char PAGINA_INICIAL[] PROGMEM = R"HTML(
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-  <title>API de Testes do Braço Robótico</title>
-
-  <style>
-    body {
-      max-width: 850px;
-      margin: 40px auto;
-      padding: 0 20px;
-      font-family: Arial, sans-serif;
-      background: #10131a;
-      color: #f1f4f8;
-    }
-
-    h1 {
-      color: #8ea6ff;
-    }
-
-    h2 {
-      margin-top: 32px;
-      color: #b5c2ff;
-    }
-
-    p {
-      line-height: 1.6;
-    }
-
-    code {
-      display: block;
-      margin: 8px 0;
-      padding: 12px;
-      overflow-wrap: anywhere;
-      border: 1px solid #32394c;
-      border-radius: 8px;
-      background: #1a1f2b;
-    }
-
-    a {
-      color: #9db3ff;
-    }
-
-    .aviso {
-      padding: 14px;
-      border-left: 4px solid #ffc857;
-      background: #242113;
-    }
-  </style>
-</head>
-
-<body>
-  <h1>API de Testes do Braço Robótico</h1>
-
-  <p>
-    Esta página permite testar os servos diretamente pelo navegador.
-    A versão foi criada para validação da comunicação com o ESP32.
-  </p>
-
-  <div class="aviso">
-    O sistema precisa ser habilitado antes dos movimentos.
-    Nenhum servo é inicializado automaticamente.
-  </div>
-
-  <h2>Sistema</h2>
-
-  <code>
-    <a href="/status">/status</a>
-  </code>
-
-  <code>
-    <a href="/habilitar">/habilitar</a>
-  </code>
-
-  <code>
-    <a href="/desabilitar">/desabilitar</a>
-  </code>
-
-  <code>
-    <a href="/stop">/stop</a>
-  </code>
-
-  <code>
-    <a href="/centro">/centro</a>
-  </code>
-
-  <h2>Movimentos individuais</h2>
-
-  <code>
-    <a href="/servo?motor=garra_abertura&angle=90">
-      /servo?motor=garra_abertura&amp;angle=90
-    </a>
-  </code>
-
-  <code>
-    <a href="/servo?motor=garra_rotacao&angle=90">
-      /servo?motor=garra_rotacao&amp;angle=90
-    </a>
-  </code>
-
-  <code>
-    <a href="/servo?motor=punho&angle=90">
-      /servo?motor=punho&amp;angle=90
-    </a>
-  </code>
-
-  <code>
-    <a href="/servo?motor=cotovelo&angle=90">
-      /servo?motor=cotovelo&amp;angle=90
-    </a>
-  </code>
-
-  <code>
-    <a href="/servo?motor=ombro&angle=90">
-      /servo?motor=ombro&amp;angle=90
-    </a>
-  </code>
-
-  <code>
-    <a href="/servo?motor=base_rotacao&angle=90">
-      /servo?motor=base_rotacao&amp;angle=90
-    </a>
-  </code>
-
-  <h2>Movimento conjunto</h2>
-
-  <code>
-    <a href="/move?garra_abertura=90&garra_rotacao=90&punho=90&cotovelo=90&ombro=90&base_rotacao=90">
-      /move?garra_abertura=90&amp;garra_rotacao=90&amp;punho=90&amp;cotovelo=90&amp;ombro=90&amp;base_rotacao=90
-    </a>
-  </code>
-</body>
-</html>
-)HTML";
-
-// ============================================================
-// ROTAS
-// ============================================================
-
-void handleRoot() {
-  server.send_P(
-    200,
-    "text/html; charset=utf-8",
-    PAGINA_INICIAL
+  char buf[160];
+  snprintf(buf, sizeof(buf),
+    "{\"sucesso\":true,\"b\":%d,\"o\":%d,\"c\":%d,\"p\":%d,\"gr\":%d,\"ga\":%d,\"m\":%d}",
+    motores[BASE_ROTACAO].anexado ? motores[BASE_ROTACAO].anguloAtual : 90,
+    motores[OMBRO_MASTER].anexado ? motores[OMBRO_MASTER].anguloAtual : 90,
+    motores[COTOVELO].anexado ? motores[COTOVELO].anguloAtual : 90,
+    motores[PUNHO].anexado ? motores[PUNHO].anguloAtual : 90,
+    motores[GARRA_ROTACAO].anexado ? motores[GARRA_ROTACAO].anguloAtual : 90,
+    motores[GARRA_ABERTURA].anexado ? motores[GARRA_ABERTURA].anguloAtual : 90,
+    emMovimento ? 1 : 0
   );
+  server.send(200, "application/json", buf);
 }
 
 void handleStatus() {
-  enviarJson(
-    200,
-    gerarStatusJson()
-  );
-}
-
-void handleHabilitar() {
-  sistemaHabilitado = true;
-
-  enviarSucesso(
-    "Sistema habilitado. Os servos aguardam comandos."
-  );
-}
-
-void handleDesabilitar() {
-  pararMovimentos();
-  desanexarTodos();
-
-  sistemaHabilitado = false;
-
-  enviarSucesso(
-    "Sistema desabilitado e sinais PWM removidos."
-  );
-}
-
-void handleStop() {
-  pararMovimentos();
-
-  enviarSucesso(
-    "Movimentos interrompidos."
-  );
-}
-
-void handleCentro() {
-  if (!sistemaHabilitado) {
-    enviarErro(
-      409,
-      "SYSTEM_DISABLED",
-      "Habilite o sistema antes de movimentar os servos."
-    );
-
-    return;
-  }
-
-  String erro;
-
-  aplicarComando(
-    "garra_abertura",
-    CENTRO_GARRA_ABERTURA,
-    35,
-    erro
-  );
-
-  aplicarComando(
-    "garra_rotacao",
-    CENTRO_GARRA_ROTACAO,
-    35,
-    erro
-  );
-
-  aplicarComando(
-    "punho",
-    CENTRO_PUNHO,
-    35,
-    erro
-  );
-
-  aplicarComando(
-    "cotovelo",
-    CENTRO_COTOVELO,
-    35,
-    erro
-  );
-
-  aplicarComando(
-    "ombro",
-    CENTRO_OMBRO,
-    35,
-    erro
-  );
-
-  aplicarComando(
-    "base_rotacao",
-    CENTRO_BASE_ROTACAO,
-    35,
-    erro
-  );
-
-  enviarSucesso(
-    "Movimento para a posicao central iniciado.",
-    202
-  );
-}
-
-void handleServo() {
-  if (!sistemaHabilitado) {
-    enviarErro(
-      409,
-      "SYSTEM_DISABLED",
-      "Habilite o sistema usando /habilitar."
-    );
-
-    return;
-  }
-
-  if (
-    !server.hasArg("motor") ||
-    !server.hasArg("angle")
-  ) {
-    enviarErro(
-      400,
-      "MISSING_PARAMETERS",
-      "Use /servo?motor=nome&angle=90"
-    );
-
-    return;
-  }
-
-  String nome = server.arg("motor");
-
-  int angulo;
-
-  if (
-    !lerNumero(
-      server.arg("angle"),
-      0,
-      180,
-      angulo
-    )
-  ) {
-    enviarErro(
-      400,
-      "INVALID_ANGLE",
-      "O angulo deve ser um numero entre 0 e 180."
-    );
-
-    return;
-  }
-
-  int velocidade = VELOCIDADE_PADRAO;
-
-  if (server.hasArg("speed")) {
-    if (
-      !lerNumero(
-        server.arg("speed"),
-        1,
-        180,
-        velocidade
-      )
-    ) {
-      enviarErro(
-        400,
-        "INVALID_SPEED",
-        "A velocidade deve estar entre 1 e 180."
-      );
-
-      return;
-    }
-  }
-
-  String erro;
-
-  if (
-    !aplicarComando(
-      nome,
-      angulo,
-      velocidade,
-      erro
-    )
-  ) {
-    enviarErro(
-      400,
-      "INVALID_COMMAND",
-      erro
-    );
-
-    return;
-  }
-
   String json = "{";
-
   json += "\"sucesso\":true,";
-  json += "\"mensagem\":\"Comando recebido\",";
-  json += "\"motor\":\"" + nome + "\",";
-  json += "\"angulo\":" + String(angulo) + ",";
-  json += "\"velocidade\":" + String(velocidade);
-
-  json += "}";
-
-  enviarJson(
-    202,
-    json
-  );
+  json += "\"sistema\":\"braco_robotico_v8\",";
+  json += "\"habilitado\":" + String(sistemaHabilitado ? "true" : "false") + ",";
+  json += "\"i2s_ativo\":" + String(i2sIniciado ? "true" : "false") + ",";
+  json += "\"ip\":\"" + WiFi.softAPIP().toString() + "\",";
+  json += "\"ip_sta\":\"" + (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "desconectado") + "\",";
+  json += "\"ip_ativo\":\"" + (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : WiFi.softAPIP().toString()) + "\",";
+  json += "\"motores\":[";
+  for (int i = 0; i < TOTAL_MOTORES; i++) {
+    if (i > 0) json += ",";
+    json += "{\"nome\":\"" + String(motores[i].nome) + "\",";
+    json += "\"pino\":" + String(motores[i].pino) + ",";
+    json += "\"anexado\":" + String(motores[i].anexado ? "true" : "false") + ",";
+    json += "\"atual\":" + String(motores[i].anexado ? motores[i].anguloAtual : 90) + ",";
+    json += "\"alvo\":" + String(motores[i].anexado ? motores[i].anguloAlvo : 90) + "}";
+  }
+  json += "]}";
+  enviarJson(200, json);
 }
 
 void handleMove() {
   if (!sistemaHabilitado) {
-    enviarErro(
-      409,
-      "SYSTEM_DISABLED",
-      "Habilite o sistema usando /habilitar."
-    );
-
+    enviarJson(409, "{\"sucesso\":false,\"erro\":\"SYSTEM_DISABLED\"}");
     return;
   }
-
   int velocidade = VELOCIDADE_PADRAO;
-
   if (server.hasArg("speed")) {
-    if (
-      !lerNumero(
-        server.arg("speed"),
-        1,
-        180,
-        velocidade
-      )
-    ) {
-      enviarErro(
-        400,
-        "INVALID_SPEED",
-        "Velocidade invalida."
-      );
-
-      return;
-    }
+    velocidade = server.arg("speed").toInt();
   }
 
-  const char* nomes[] = {
-    "garra_abertura",
-    "garra_rotacao",
-    "punho",
-    "cotovelo",
-    "ombro",
-    "base_rotacao"
-  };
+  // Parse dos parâmetros via query/form
+  if (server.hasArg("base_rotacao")) definirAlvoMotor(BASE_ROTACAO, server.arg("base_rotacao").toInt(), velocidade);
+  if (server.hasArg("ombro")) definirAlvoOmbro(server.arg("ombro").toInt(), velocidade);
+  if (server.hasArg("cotovelo")) definirAlvoMotor(COTOVELO, server.arg("cotovelo").toInt(), velocidade);
+  if (server.hasArg("punho")) definirAlvoMotor(PUNHO, server.arg("punho").toInt(), velocidade);
+  if (server.hasArg("garra_rotacao")) definirAlvoMotor(GARRA_ROTACAO, server.arg("garra_rotacao").toInt(), velocidade);
+  if (server.hasArg("garra_abertura")) definirAlvoMotor(GARRA_ABERTURA, server.arg("garra_abertura").toInt(), velocidade);
 
-  const int quantidadeNomes =
-    sizeof(nomes) / sizeof(nomes[0]);
-
-  bool encontrouComando = false;
-
-  // Primeiro valida todos os parametros.
-  for (int i = 0; i < quantidadeNomes; i++) {
-    String nome = nomes[i];
-
-    if (!server.hasArg(nome)) {
-      continue;
-    }
-
-    encontrouComando = true;
-
-    int angulo;
-
-    if (
-      !lerNumero(
-        server.arg(nome),
-        0,
-        180,
-        angulo
-      )
-    ) {
-      enviarErro(
-        400,
-        "INVALID_ANGLE",
-        "Angulo invalido para " + nome
-      );
-
-      return;
-    }
-
-    int minimo;
-    int maximo;
-
-    if (
-      !obterLimitesPublicos(
-        nome,
-        minimo,
-        maximo
-      )
-    ) {
-      enviarErro(
-        400,
-        "UNKNOWN_SERVO",
-        "Servo desconhecido: " + nome
-      );
-
-      return;
-    }
-
-    if (angulo < minimo || angulo > maximo) {
-      enviarErro(
-        400,
-        "ANGLE_OUT_OF_RANGE",
-        "Angulo fora do limite para " + nome
-      );
-
-      return;
-    }
+  // Suporte robusto a corpo JSON bruto no POST (ex: {"base_rotacao": 90, "speed": 50})
+  if (server.hasArg("plain")) {
+    String corpo = server.arg("plain");
+    auto extrair = [&](const char* chave) -> int {
+      int idx = corpo.indexOf(chave);
+      if (idx < 0) return -999;
+      int col = corpo.indexOf(":", idx);
+      if (col < 0) return -999;
+      int fim = corpo.indexOf(",", col);
+      if (fim < 0) fim = corpo.indexOf("}", col);
+      if (fim < 0) fim = corpo.length();
+      String val = corpo.substring(col + 1, fim);
+      val.trim();
+      return val.toInt();
+    };
+    int sp = extrair("\"speed\"");
+    if (sp > 0) velocidade = sp;
+    int v = extrair("\"base_rotacao\""); if (v != -999) definirAlvoMotor(BASE_ROTACAO, v, velocidade);
+    v = extrair("\"ombro\""); if (v != -999) definirAlvoOmbro(v, velocidade);
+    v = extrair("\"cotovelo\""); if (v != -999) definirAlvoMotor(COTOVELO, v, velocidade);
+    v = extrair("\"punho\""); if (v != -999) definirAlvoMotor(PUNHO, v, velocidade);
+    v = extrair("\"garra_rotacao\""); if (v != -999) definirAlvoMotor(GARRA_ROTACAO, v, velocidade);
+    v = extrair("\"garra_abertura\""); if (v != -999) definirAlvoMotor(GARRA_ABERTURA, v, velocidade);
   }
 
-  if (!encontrouComando) {
-    enviarErro(
-      400,
-      "EMPTY_COMMAND",
-      "Nenhuma posicao foi informada."
-    );
+  enviarJson(200, "{\"sucesso\":true,\"mensagem\":\"Movimento atualizado\"}");
+}
 
+void handleHome() {
+  if (!sistemaHabilitado) {
+    enviarJson(409, "{\"sucesso\":false,\"erro\":\"SYSTEM_DISABLED\"}");
     return;
   }
+  anexarTodosNaHome();
+  enviarJson(200, "{\"sucesso\":true,\"mensagem\":\"Movendo para Home\"}");
+}
 
-  // Depois aplica todos os parametros validados.
-  for (int i = 0; i < quantidadeNomes; i++) {
-    String nome = nomes[i];
-
-    if (!server.hasArg(nome)) {
-      continue;
-    }
-
-    int angulo = server.arg(nome).toInt();
-    String erro;
-
-    aplicarComando(
-      nome,
-      angulo,
-      velocidade,
-      erro
-    );
+void handleHomeConfig() {
+  if (server.method() == HTTP_POST) {
+    if (server.hasArg("base_rotacao")) posHome.base_rotacao = server.arg("base_rotacao").toInt();
+    if (server.hasArg("ombro")) posHome.ombro = server.arg("ombro").toInt();
+    if (server.hasArg("cotovelo")) posHome.cotovelo = server.arg("cotovelo").toInt();
+    if (server.hasArg("punho")) posHome.punho = server.arg("punho").toInt();
+    if (server.hasArg("garra_rotacao")) posHome.garra_rotacao = server.arg("garra_rotacao").toInt();
+    if (server.hasArg("garra_abertura")) posHome.garra_abertura = server.arg("garra_abertura").toInt();
   }
+  String json = "{";
+  json += "\"base_rotacao\":" + String(posHome.base_rotacao) + ",";
+  json += "\"ombro\":" + String(posHome.ombro) + ",";
+  json += "\"cotovelo\":" + String(posHome.cotovelo) + ",";
+  json += "\"punho\":" + String(posHome.punho) + ",";
+  json += "\"garra_rotacao\":" + String(posHome.garra_rotacao) + ",";
+  json += "\"garra_abertura\":" + String(posHome.garra_abertura);
+  json += "}";
+  enviarJson(200, json);
+}
 
-  enviarSucesso(
-    "Movimento conjunto iniciado.",
-    202
-  );
+void handlePins() {
+  if (server.method() == HTTP_POST) {
+    if (server.hasArg("garra_abertura")) remapearPino(GARRA_ABERTURA, server.arg("garra_abertura").toInt());
+    if (server.hasArg("garra_rotacao"))  remapearPino(GARRA_ROTACAO,  server.arg("garra_rotacao").toInt());
+    if (server.hasArg("ombro_slave"))    remapearPino(OMBRO_SLAVE,    server.arg("ombro_slave").toInt());
+    if (server.hasArg("punho"))          remapearPino(PUNHO,          server.arg("punho").toInt());
+    if (server.hasArg("base_rotacao"))   remapearPino(BASE_ROTACAO,   server.arg("base_rotacao").toInt());
+    if (server.hasArg("cotovelo"))       remapearPino(COTOVELO,       server.arg("cotovelo").toInt());
+    if (server.hasArg("ombro_master"))   remapearPino(OMBRO_MASTER,   server.arg("ombro_master").toInt());
+  }
+  String json = "{";
+  for (int i = 0; i < TOTAL_MOTORES; i++) {
+    if (i > 0) json += ",";
+    json += "\"" + String(motores[i].nome) + "\":" + String(motores[i].pino);
+  }
+  json += "}";
+  enviarJson(200, json);
+}
+
+void handleAudioStream() {
+  // Recebe chunk PCM binário via POST HTTP e envia para o I2S do alto-falante MAX98357A
+  if (!i2sIniciado) {
+    enviarJson(500, "{\"sucesso\":false,\"erro\":\"I2S_NOT_READY\"}");
+    return;
+  }
+  HTTPUpload& upload = server.upload();
+  if (upload.status == UPLOAD_FILE_WRITE) {
+    size_t bytesEscritos = 0;
+    i2s_write(I2S_SPK_PORT, upload.buf, upload.currentSize, &bytesEscritos, portMAX_DELAY);
+  }
+  enviarJson(200, "{\"sucesso\":true}");
+}
+
+void handleMicCapture() {
+  if (!i2sIniciado) {
+    enviarJson(500, "{\"sucesso\":false,\"erro\":\"I2S_NOT_READY\"}");
+    return;
+  }
+  // Captura chunk de áudio estéreo cru dos microfones INMP441
+  const size_t BUFFER_SIZE = 16000; // ~0.25s por chunk a 16kHz estéreo 16bit
+  uint8_t* audioBuf = (uint8_t*)malloc(BUFFER_SIZE);
+  if (!audioBuf) {
+    enviarJson(500, "{\"sucesso\":false,\"erro\":\"OUT_OF_MEMORY\"}");
+    return;
+  }
+  size_t bytesLidos = 0;
+  i2s_read(I2S_MIC_PORT, audioBuf, BUFFER_SIZE, &bytesLidos, pdMS_TO_TICKS(600));
+
+  adicionarCors();
+  server.sendHeader("Content-Disposition", "attachment; filename=\"mic.raw\"");
+  server.send(200, "application/octet-stream", (const char*)audioBuf, bytesLidos);
+  free(audioBuf);
 }
 
 void handleOptions() {
@@ -1229,132 +525,30 @@ void handleOptions() {
   server.send(204);
 }
 
-void handleNotFound() {
-  if (server.method() == HTTP_OPTIONS) {
-    handleOptions();
-    return;
-  }
-
-  enviarErro(
-    404,
-    "NOT_FOUND",
-    "Rota nao encontrada."
-  );
-}
-
-// ============================================================
-// WI-FI
-// ============================================================
-
-void iniciarWiFi() {
-  Serial.println("Inicializando rede Wi-Fi de testes...");
-
-  WiFi.mode(WIFI_OFF);
-  delay(300);
-
-  WiFi.mode(WIFI_AP);
-  WiFi.setSleep(false);
-
-  bool configuracaoOk = WiFi.softAPConfig(
-    AP_IP,
-    AP_GATEWAY,
-    AP_SUBNET
-  );
-
-  if (!configuracaoOk) {
-    Serial.println(
-      "Aviso: falha ao configurar o IP fixo."
-    );
-  }
-
-  bool redeCriada = WiFi.softAP(
-    AP_SSID,
-    AP_PASSWORD,
-    6,
-    false,
-    4
-  );
-
-  if (!redeCriada) {
-    Serial.println(
-      "ERRO: nao foi possivel criar a rede Wi-Fi."
-    );
-
-    return;
-  }
-
-  Serial.println("Rede criada com sucesso.");
-
-  Serial.print("SSID: ");
-  Serial.println(AP_SSID);
-
-  Serial.print("Senha: ");
-  Serial.println(AP_PASSWORD);
-
-  Serial.print("IP: ");
-  Serial.println(WiFi.softAPIP());
-}
-
-// ============================================================
-// CONFIGURACAO DAS ROTAS
-// ============================================================
-
 void configurarRotas() {
-  server.on(
-    "/",
-    HTTP_GET,
-    handleRoot
-  );
+  server.on("/telemetry", HTTP_GET, handleTelemetry);
+  server.on("/status", HTTP_GET, handleStatus);
+  server.on("/move", HTTP_GET, handleMove);
+  server.on("/move", HTTP_POST, handleMove);
+  server.on("/home", HTTP_GET, handleHome);
+  server.on("/home", HTTP_POST, handleHome);
+  server.on("/home/config", HTTP_GET, handleHomeConfig);
+  server.on("/home/config", HTTP_POST, handleHomeConfig);
+  server.on("/pins", HTTP_GET, handlePins);
+  server.on("/pins", HTTP_POST, handlePins);
+  server.on("/habilitar", HTTP_GET, []() { sistemaHabilitado = true; enviarJson(200, "{\"sucesso\":true}"); });
+  server.on("/desabilitar", HTTP_GET, []() { sistemaHabilitado = false; desanexarTodos(); enviarJson(200, "{\"sucesso\":true}"); });
+  server.on("/stop", HTTP_GET, []() { pararMovimentos(); enviarJson(200, "{\"sucesso\":true}"); });
+  server.on("/audio/stream", HTTP_POST, handleAudioStream);
+  server.on("/mic/capture", HTTP_GET, handleMicCapture);
 
-  server.on(
-    "/status",
-    HTTP_GET,
-    handleStatus
-  );
-
-  server.on(
-    "/habilitar",
-    HTTP_GET,
-    handleHabilitar
-  );
-
-  server.on(
-    "/desabilitar",
-    HTTP_GET,
-    handleDesabilitar
-  );
-
-  server.on(
-    "/stop",
-    HTTP_GET,
-    handleStop
-  );
-
-  server.on(
-    "/centro",
-    HTTP_GET,
-    handleCentro
-  );
-
-  server.on(
-    "/home",
-    HTTP_GET,
-    handleCentro
-  );
-
-  server.on(
-    "/servo",
-    HTTP_GET,
-    handleServo
-  );
-
-  server.on(
-    "/move",
-    HTTP_GET,
-    handleMove
-  );
-
-  server.onNotFound(handleNotFound);
+  server.onNotFound([]() {
+    if (server.method() == HTTP_OPTIONS) {
+      handleOptions();
+    } else {
+      enviarJson(404, "{\"sucesso\":false,\"erro\":\"NOT_FOUND\"}");
+    }
+  });
 }
 
 // ============================================================
@@ -1363,27 +557,52 @@ void configurarRotas() {
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  delay(500);
+  Serial.println("\n=== BRAÇO ROBÓTICO ESP32 V8.0 INICIALIZANDO ===");
 
-  Serial.println();
-  Serial.println("========================================");
-  Serial.println("API DE TESTES DO BRACO ROBOTICO");
-  Serial.println("========================================");
+  // Iniciar I2S de áudio
+  configurarI2S();
 
-  /*
-    Nenhum servo e anexado nesta etapa.
-    Nenhuma posicao e enviada automaticamente.
-  */
-  prepararPinosSemPWM();
+  // Inicializar Wi-Fi em modo dual (AP + Station)
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET);
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
+  Serial.print("[Wi-Fi AP] Ponto de acesso próprio ativo: ");
+  Serial.print(AP_SSID);
+  Serial.print(" | IP: ");
+  Serial.println(WiFi.softAPIP());
 
-  iniciarWiFi();
+  if (strlen(STA_SSID) > 0 && strcmp(STA_SSID, "SUA_REDE_WIFI") != 0) {
+    if (USAR_IP_ESTATICO_STA) {
+      WiFi.config(ESP32_IP_FIXO, ESP32_GATEWAY, ESP32_SUBNET, ESP32_DNS);
+    }
+    WiFi.begin(STA_SSID, STA_PASSWORD);
+    Serial.print("[Wi-Fi STA] Conectando a ");
+    Serial.print(STA_SSID);
+    
+    int tentativas = 0;
+    while (WiFi.status() != WL_CONNECTED && tentativas < 20) {
+      delay(500);
+      Serial.print(".");
+      tentativas++;
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\n[Wi-Fi STA] Conectado com sucesso!");
+      Serial.print("[Wi-Fi STA] IP ATRIBUÍDO AO ESP32: ");
+      Serial.println(WiFi.localIP());
+    } else {
+      Serial.println("\n[Wi-Fi STA] Falha ao conectar no Wi-Fi Station.");
+      Serial.print("[Wi-Fi STA] Conecte diretamente no AP: ");
+      Serial.print(AP_SSID);
+      Serial.print(" (IP: ");
+      Serial.print(WiFi.softAPIP());
+      Serial.println(")");
+    }
+  }
+
   configurarRotas();
-
   server.begin();
-
-  Serial.println("Servidor HTTP iniciado.");
-  Serial.println("Acesse no navegador:");
-  Serial.println("http://192.168.4.1");
+  Serial.println("Servidor HTTP do ESP32 ativo na porta 80.");
 }
 
 void loop() {

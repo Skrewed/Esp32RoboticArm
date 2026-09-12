@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Controle do Braço Robótico ESP32 - 7 Servos & IA</title>
+  <link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+  <!-- 3D Viewport Canvas -->
+  <div id="viewport-container">
+    <canvas id="canvas-3d"></canvas>
+  </div>
+
+  <!-- UI HUD Layer -->
+  <div class="ui-layer">
+    <!-- Top Bar -->
+    <header class="top-bar interactive">
+      <div class="brand-section">
+        <div class="brand-icon">🤖</div>
+        <span class="brand-title">Braço Robótico ESP32</span>
+        <button class="btn-theme-toggle" id="btn-theme-toggle" title="Alternar entre Tema Claro e Tema Escuro" aria-label="Alternar Tema">
+          <span class="theme-icon" id="theme-toggle-icon">☀️</span>
+          <span class="theme-text" id="theme-toggle-text">Tema Claro</span>
+        </button>
+      </div>
+
+      <div class="status-section">
+        <div class="badge badge-simulated" id="badge-esp-status">
+          <span class="badge-dot"></span>
+          <span id="esp-status-text">Simulador Virtual</span>
+        </div>
+
+        <div class="ip-connection-box">
+          <label for="esp-ip-input" class="ip-label">IP ESP32:</label>
+          <input type="text" id="esp-ip-input" value="192.168.1.150" placeholder="192.168.1.150" title="Digite o IP da API do ESP32">
+          <button class="btn btn-connect" id="btn-update-ip" title="Testar e Conectar ao ESP32">
+            <span id="btn-connect-icon">⚡</span>
+            <span id="btn-connect-text">Testar Conexão</span>
+          </button>
+        </div>
+
+        <button class="btn btn-secondary" id="btn-bring-home">
+          <span>🏠</span> Bring Home
+        </button>
+
+        <button class="btn btn-secondary" id="btn-open-pins">
+          <span>🔌</span> Pinos ESP32
+        </button>
+
+        <button class="btn btn-danger" id="btn-emergency-stop">
+          <span>⏹️</span> Parada Geral
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Workspace Workspace Overlay -->
+    <div class="workspace-overlay">
+      <!-- Left Controls Dock -->
+      <aside class="left-controls interactive">
+        <div class="hud-card">
+          <div class="tab-nav">
+            <button class="tab-btn active" data-target="tab-home">Posição</button>
+            <button class="tab-btn" data-target="tab-music">Música & Dança</button>
+            <button class="tab-btn" data-target="tab-ai">IA Talk</button>
+          </div>
+
+          <!-- Tab 1: Posição & Home -->
+          <div class="tab-pane active" id="tab-home">
+            <div class="card-header">
+              <span class="card-title">Calibração de Home</span>
+            </div>
+            <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.4;">
+              O botão "Bring Home" move todos os servos para a posição zero/repouso. Você pode personalizar esta coordenada no espaço para cada servo.
+            </p>
+            <button class="btn btn-secondary" id="btn-edit-home" style="width: 100%;">
+              <span>⚙️</span> Personalizar Posição Home
+            </button>
+          </div>
+
+          <!-- Tab 2: Música & Dança -->
+          <div class="tab-pane" id="tab-music">
+            <div class="card-header">
+              <span class="card-title">Música & Coreografia</span>
+            </div>
+            
+            <div class="input-group">
+              <label class="input-label">Arquivo de Áudio (.mp3 / .wav)</label>
+              <div class="file-dropzone" id="music-dropzone">
+                <input type="file" id="music-file-input" accept=".mp3,.wav" style="display: none;">
+                <span class="dropzone-text">Clique para selecionar ou arraste sua música</span>
+              </div>
+            </div>
+
+            <div class="input-group">
+              <label class="input-label">Ou Link do YouTube</label>
+              <div style="display: flex; gap: 6px;">
+                <input type="text" class="text-input" id="yt-url-input" placeholder="https://youtube.com/watch?v=...">
+                <button class="btn btn-secondary" id="btn-yt-download">Baixar</button>
+              </div>
+            </div>
+
+            <div style="margin-top: 10px; padding: 8px; background: rgba(0,0,0,0.3); border-radius: var(--radius-sm);">
+              <div style="font-size: 11px; color: var(--text-muted);">Música Atual:</div>
+              <div id="track-title" style="font-size: 12px; font-weight: 600; color: var(--accent-cyan); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Nenhuma selecionada</div>
+              <div id="music-status-text" style="font-size: 11px; color: var(--text-dim); margin-top: 4px;">Aguardando música...</div>
+            </div>
+
+            <canvas id="music-visualizer" class="visualizer-canvas" width="280" height="60"></canvas>
+
+            <div style="display: flex; gap: 8px; margin-top: 12px;">
+              <button class="btn btn-primary" id="btn-music-play" style="flex: 1;">Reproduzir & Dançar</button>
+              <button class="btn btn-secondary" id="btn-music-stop">Parar</button>
+            </div>
+          </div>
+
+          <!-- Tab 3: IA Talk -->
+          <div class="tab-pane" id="tab-ai">
+            <div class="card-header">
+              <span class="card-title">Conversação por Voz (PT-BR)</span>
+              <button class="btn-icon-tiny" id="btn-ai-reset" title="Reiniciar conversa">🔄</button>
+            </div>
+
+            <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px; line-height: 1.3;">
+              Ao ligar a IA, o braço escuta seus microfones, transcreve com Groq Whisper, pensa com GPT OSS 20B e fala via Mistral Voxtral pelo alto-falante.
+            </p>
+
+            <div class="input-group" style="margin-bottom: 8px;">
+              <label class="input-label">Fonte do Microfone & Direcionamento</label>
+              <select class="pin-select" id="ai-mic-source" style="width: 100%; font-size: 11px;">
+                <option value="arm_mic" selected>Microfones do Braço (I2S - Seguir Usuário)</option>
+                <option value="browser_mic">Microfone do Navegador</option>
+              </select>
+            </div>
+
+            <div class="input-group" style="margin-bottom: 8px;">
+              <label class="input-label">Voz da IA (Síntese Neural em PT-BR)</label>
+              <select class="pin-select" id="ai-voice-select" style="width: 100%; font-size: 11px;">
+                <option value="pt-BR-AntonioNeural" selected>Antônio (Masculino Brasileiro - Nativo Sem Sotaque)</option>
+                <option value="pt-BR-FranciscaNeural">Francisca (Feminino Brasileiro - Nativo Sem Sotaque)</option>
+                <option value="pt-BR-ThalitaMultilingualNeural">Thalita (Feminino Multilíngue)</option>
+                <option value="en_paul_neutral">Paul (Mistral Voxtral - Sotaque Estrangeiro)</option>
+              </select>
+            </div>
+
+            <div class="input-group" style="margin-bottom: 8px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <label class="input-label" style="margin-bottom: 0;">Filtro de Ruído & Limiar de Fala (VAD)</label>
+                <span id="ai-sensitivity-val" style="font-size: 11px; font-weight: 700; color: var(--accent-cyan);">35</span>
+              </div>
+              <input type="range" class="joint-slider" id="ai-sensitivity-slider" min="15" max="65" value="35" style="margin-bottom: 4px;">
+              <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); margin-bottom: 4px;">
+                <span>Ambiente Silencioso</span>
+                <span>Anti-Teclado / Pássaros</span>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+              <button class="btn btn-primary" id="btn-ai-talk" style="flex: 1;">
+                Iniciar IA Talk
+              </button>
+              <button class="btn btn-secondary" id="btn-ai-send-now" style="display: none; padding: 8px 12px;" title="Enviar fala imediatamente sem aguardar silêncio">
+                ⏹️ Enviar
+              </button>
+            </div>
+
+            <div class="ai-status-indicator">
+              <span class="badge-dot" id="ai-status-dot"></span>
+              <span id="ai-status-text">IA Talk Desligada</span>
+            </div>
+
+            <div id="doa-indicator" style="display: none; margin-top: 6px; padding: 6px 10px; background: rgba(56, 189, 248, 0.15); border: 1px solid var(--accent-cyan); border-radius: var(--radius-sm); font-size: 11px; color: var(--accent-cyan);">
+              🎯 <span id="doa-text">Direção: Detectando...</span>
+            </div>
+
+            <canvas id="ai-mic-visualizer" style="width: 100%; height: 20px; background: rgba(0,0,0,0.4); border-radius: 4px; margin-top: 6px;" width="280" height="20"></canvas>
+
+            <div class="chat-container" id="ai-chat-history">
+              <div class="chat-bubble chat-ai">
+                Olá! Ligue o modo IA Talk para conversar comigo por voz em tempo real.
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Right HUD: Angles Readout & Manual Fine Tuning -->
+      <aside class="right-controls interactive">
+        <div class="hud-card">
+          <div class="card-header">
+            <span class="card-title">Juntas & Ângulos</span>
+          </div>
+
+          <div class="joint-control-group">
+            <div class="joint-row">
+              <span class="joint-name">Base Rotação (D25)</span>
+              <span class="joint-badge" id="angle-val-base_rotacao">90°</span>
+            </div>
+            <input type="range" class="joint-slider" id="manual-slider-base_rotacao" min="15" max="165" value="90">
+            <div class="slider-scale">
+              <span class="scale-limit">15°</span>
+              <span class="scale-current" id="slider-cur-base_rotacao">Atual: <strong>90°</strong></span>
+              <span class="scale-limit">165°</span>
+            </div>
+          </div>
+
+          <div class="joint-control-group">
+            <div class="joint-row">
+              <span class="joint-name">Ombro (D27 / D18)</span>
+              <span class="joint-badge" id="angle-val-ombro">90°</span>
+            </div>
+            <input type="range" class="joint-slider" id="manual-slider-ombro" min="35" max="145" value="90">
+            <div class="slider-scale">
+              <span class="scale-limit">35°</span>
+              <span class="scale-current" id="slider-cur-ombro">Atual: <strong>90°</strong></span>
+              <span class="scale-limit">145°</span>
+            </div>
+          </div>
+
+          <div class="joint-control-group">
+            <div class="joint-row">
+              <span class="joint-name">Cotovelo (D26)</span>
+              <span class="joint-badge" id="angle-val-cotovelo">90°</span>
+            </div>
+            <input type="range" class="joint-slider" id="manual-slider-cotovelo" min="25" max="105" value="90">
+            <div class="slider-scale">
+              <span class="scale-limit">25°</span>
+              <span class="scale-current" id="slider-cur-cotovelo">Atual: <strong>90°</strong></span>
+              <span class="scale-limit">105°</span>
+            </div>
+          </div>
+
+          <div class="joint-control-group">
+            <div class="joint-row">
+              <span class="joint-name">Punho Pitch (D19)</span>
+              <span class="joint-badge" id="angle-val-punho">90°</span>
+            </div>
+            <input type="range" class="joint-slider" id="manual-slider-punho" min="35" max="145" value="90">
+            <div class="slider-scale">
+              <span class="scale-limit">35°</span>
+              <span class="scale-current" id="slider-cur-punho">Atual: <strong>90°</strong></span>
+              <span class="scale-limit">145°</span>
+            </div>
+          </div>
+
+          <div class="joint-control-group">
+            <div class="joint-row">
+              <span class="joint-name">Garra Rotação (D14)</span>
+              <span class="joint-badge" id="angle-val-garra_rotacao">90°</span>
+            </div>
+            <input type="range" class="joint-slider" id="manual-slider-garra_rotacao" min="0" max="180" value="90">
+            <div class="slider-scale">
+              <span class="scale-limit">0°</span>
+              <span class="scale-current" id="slider-cur-garra_rotacao">Atual: <strong>90°</strong></span>
+              <span class="scale-limit">180°</span>
+            </div>
+          </div>
+
+          <div class="joint-control-group">
+            <div class="joint-row">
+              <span class="joint-name">Garra Abertura (D13)</span>
+              <span class="joint-badge" id="angle-val-garra_abertura">90°</span>
+            </div>
+            <input type="range" class="joint-slider" id="manual-slider-garra_abertura" min="45" max="135" value="90">
+            <div class="slider-scale">
+              <span class="scale-limit">45°</span>
+              <span class="scale-current" id="slider-cur-garra_abertura">Atual: <strong>90°</strong></span>
+              <span class="scale-limit">135°</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Bottom Center Gimbal Hint Overlay -->
+    <div class="gimbal-hint-box interactive">
+      <div class="hint-item">
+        <span class="hint-key">Clique Esquerdo + Segurar</span> no Gimbal para Mover o Braço em 3D
+      </div>
+      <div class="hint-item">
+        <span class="hint-key">Barra de Espaço</span> Abrir / Fechar Garra (enquanto segura o Gimbal)
+      </div>
+      <div class="gimbal-active-badge">
+        <span>●</span> GIMBAL ATIVO
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 1: Personalizar Posição Home -->
+  <div class="modal-backdrop" id="modal-home">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="modal-title">Personalizar Posição Home (Repouso)</span>
+        <button class="modal-close" id="btn-close-home">&times;</button>
+      </div>
+      <div class="modal-body" id="home-sliders-container">
+        <!-- Generated dynamically in home_manager.js -->
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btn-reset-default-home">Padrão Físico (90°)</button>
+        <button class="btn btn-secondary" id="btn-capture-current-home">Capturar Posição 3D</button>
+        <button class="btn btn-primary" id="btn-save-home">Salvar Posição Home</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 2: Mapeamento de Pinos ESP32 -->
+  <div class="modal-backdrop" id="modal-pins">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="modal-title">Mapeamento de Pinos ESP32 / SN74HCT245N</span>
+        <button class="modal-close" id="btn-close-pins">&times;</button>
+      </div>
+      <div class="modal-body" id="pin-mapping-list">
+        <!-- Generated dynamically in pin_manager.js -->
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btn-save-pins">Salvar Mapeamento</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Script Imports -->
+  <script src="/web/js/libs/three.min.js"></script>
+  <script src="/web/js/libs/OrbitControls.js"></script>
+  <script src="/web/js/libs/TransformControls.js"></script>
+  <script src="/web/js/libs/STLLoader.js"></script>
+  
+  <script src="/web/js/arm_3d.js"></script>
+  <script src="/web/js/pin_manager.js"></script>
+  <script src="/web/js/home_manager.js"></script>
+  <script src="/web/js/music_dance.js"></script>
+  <script src="/web/js/ai_talk.js"></script>
+  <script src="/web/js/main.js"></script>
+</body>
+</html>
