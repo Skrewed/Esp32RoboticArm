@@ -1,6 +1,6 @@
 # ==============================================================================
-# Braço Robótico ESP32 - Dependências do Backend Python & IA
-# Compatível com Python 3.10, 3.11 e 3.12 (64-bit)
+# Braco Robotico ESP32 - Dependencias do Backend Python & IA
+# Compativel com Python 3.10, 3.11 e 3.12 (64-bit)
 # ==============================================================================
 
 # Framework Web & API REST
@@ -10,17 +10,18 @@ starlette>=0.36.0
 pydantic>=2.6.0
 python-multipart>=0.0.9
 
-# Comunicação Assíncrona & WebSockets
+# Comunicacao Assincrona & WebSockets
 websockets>=12.0
 httpx>=0.27.0
 python-dotenv>=1.0.0
 
-# Processamento Numérico, Áudio & Localização Sonora (DOA)
+# Processamento Numerico, Audio & Localizacao Sonora (DOA)
 numpy>=1.26.0
 scipy>=1.12.0
 
-# Download de Músicas & Análise Rítmica
+# Download de Musicas & Analise Ritmica
 yt-dlp>=2026.8.19
 
-# Síntese de Voz Neural em Português Brasileiro Nativo (pt-BR)
+# Sintese de Voz Neural em Portugues Brasileiro Nativo (pt-BR)
 edge-tts>=7.2.0
+

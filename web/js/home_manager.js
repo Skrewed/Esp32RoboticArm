@@ -5,6 +5,7 @@
 class HomeManager {
   constructor(armVisualizer) {
     this.arm = armVisualizer;
+    this.isModalOpen = false;
     this.homeConfig = {
       base_rotacao: 90,
       ombro: 90,
@@ -13,16 +14,59 @@ class HomeManager {
       garra_rotacao: 90,
       garra_abertura: 90
     };
+    this.editingConfig = { ...this.homeConfig };
 
-    // Load persisted home from localStorage if present
+    // 1. Carregar configuração personalizada do localStorage se existir
     const saved = localStorage.getItem("arm_custom_home");
     if (saved) {
       try {
-        this.homeConfig = JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === "object") {
+          this.homeConfig = { ...this.homeConfig, ...parsed };
+          this.editingConfig = { ...this.homeConfig };
+        }
       } catch (e) {}
     }
 
     this.initUI();
+    // 2. Sincronizar com o servidor no início
+    this.syncInitialConfigWithServer();
+  }
+
+  async syncInitialConfigWithServer() {
+    try {
+      const res = await fetch("/api/home/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: this.homeConfig })
+      });
+      const data = await res.json();
+      if (data && data.home_config) {
+        this.homeConfig = { ...this.homeConfig, ...data.home_config };
+        this.editingConfig = { ...this.homeConfig };
+        localStorage.setItem("arm_custom_home", JSON.stringify(this.homeConfig));
+      }
+    } catch (e) {
+      console.warn("Não foi possível sincronizar homeConfig inicial:", e);
+    }
+  }
+
+  onTelemetry(serverHomeConfig) {
+    // NUNCA sobrescrever enquanto o usuário estiver editando no modal
+    if (this.isModalOpen) return;
+    if (!serverHomeConfig || typeof serverHomeConfig !== "object") return;
+
+    let changed = false;
+    for (const [k, v] of Object.entries(serverHomeConfig)) {
+      if (this.homeConfig[k] !== v) {
+        changed = true;
+        this.homeConfig[k] = v;
+      }
+    }
+    if (changed) {
+      this.editingConfig = { ...this.homeConfig };
+      localStorage.setItem("arm_custom_home", JSON.stringify(this.homeConfig));
+    }
   }
 
   initUI() {
@@ -67,7 +111,11 @@ class HomeManager {
       this.arm.syncGimbalToClawTip();
     }
     try {
-      await fetch("/api/home", { method: "POST" });
+      await fetch("/api/home", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ angles: this.homeConfig })
+      });
       if (window.showToast) window.showToast("Movendo para a Posição Home...");
     } catch (e) {
       console.error("Erro ao enviar comando home:", e);
@@ -80,12 +128,20 @@ class HomeManager {
   }
 
   openModal() {
+    this.isModalOpen = true;
+    this.editingConfig = { ...this.homeConfig };
     this.renderSliders();
     this.modal.classList.add("active");
   }
 
   closeModal() {
+    this.isModalOpen = false;
     this.modal.classList.remove("active");
+    // Restaura visualização do braço se cancelado
+    if (this.arm) {
+      this.arm.applyAllAngles(this.arm.targetAngles);
+      this.arm.syncGimbalToClawTip();
+    }
   }
 
   renderSliders() {
@@ -110,10 +166,10 @@ class HomeManager {
       garra_abertura: { min: 45, max: 135 }
     };
 
-    for (const [joint, val] of Object.entries(this.homeConfig)) {
+    for (const [joint, val] of Object.entries(this.editingConfig)) {
       const lim = jointLimits[joint] || { min: 0, max: 180 };
       const clampedVal = Math.max(lim.min, Math.min(lim.max, val));
-      this.homeConfig[joint] = clampedVal;
+      this.editingConfig[joint] = clampedVal;
 
       const row = document.createElement("div");
       row.className = "input-group joint-control-group";
@@ -146,8 +202,8 @@ class HomeManager {
         document.getElementById(`val-home-${joint}`).textContent = `${v}°`;
         const curIndicator = document.getElementById(`scale-cur-home-${joint}`);
         if (curIndicator) curIndicator.innerHTML = `Atual: <strong>${v}°</strong>`;
-        this.homeConfig[joint] = v;
-        // Preview in 3D in real time
+        this.editingConfig[joint] = v;
+        // Visualizar 3D em tempo real
         if (this.arm) {
           this.arm.setJointAngle(joint, v);
           this.arm.syncGimbalToClawTip();
@@ -163,18 +219,18 @@ class HomeManager {
 
   captureCurrentPose() {
     if (this.arm) {
-      for (const joint of Object.keys(this.homeConfig)) {
+      for (const joint of Object.keys(this.editingConfig)) {
         if (this.arm.currentAngles[joint] !== undefined) {
-          this.homeConfig[joint] = this.arm.currentAngles[joint];
+          this.editingConfig[joint] = Math.round(this.arm.currentAngles[joint]);
         }
       }
       this.renderSliders();
-      if (window.showToast) window.showToast("Posição atual capturada para o Home!");
+      if (window.showToast) window.showToast("Posição 3D atual capturada para o Home!");
     }
   }
 
   resetPhysicalDefault() {
-    this.homeConfig = {
+    this.editingConfig = {
       base_rotacao: 90,
       ombro: 90,
       cotovelo: 90,
@@ -184,26 +240,37 @@ class HomeManager {
     };
     this.renderSliders();
     if (this.arm) {
-      this.arm.applyAllAngles(this.homeConfig);
+      this.arm.applyAllAngles(this.editingConfig, true);
     }
-    if (window.showToast) window.showToast("Home restaurado para o padrão físico (90°).");
+    if (window.showToast) window.showToast("Home redefinido para o padrão físico (90°).");
   }
 
   async saveHomeConfig() {
+    this.homeConfig = { ...this.editingConfig };
     localStorage.setItem("arm_custom_home", JSON.stringify(this.homeConfig));
     try {
-      await fetch("/api/home/config", {
+      const res = await fetch("/api/home/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ config: this.homeConfig })
       });
-      this.closeModal();
+      const data = await res.json();
+      if (data && data.home_config) {
+        this.homeConfig = { ...this.homeConfig, ...data.home_config };
+        this.editingConfig = { ...this.homeConfig };
+        localStorage.setItem("arm_custom_home", JSON.stringify(this.homeConfig));
+      }
+      this.isModalOpen = false;
+      this.modal.classList.remove("active");
       if (window.showToast) window.showToast("Nova posição Home salva com sucesso!");
     } catch (e) {
       console.error("Erro ao salvar config home:", e);
-      this.closeModal();
+      this.isModalOpen = false;
+      this.modal.classList.remove("active");
+      if (window.showToast) window.showToast("Salvo localmente (servidor indisponível).");
     }
   }
 }
 
 window.HomeManager = HomeManager;
+

@@ -1,9 +1,10 @@
+import json
 import time
 import asyncio
 import httpx
 from server.config import (
     ESP32_DEFAULT_IP, ESP32_PORT, TECHNICAL_PINS,
-    DEFAULT_HOME_CONFIG, SERVO_LIMITS
+    DEFAULT_HOME_CONFIG, SERVO_LIMITS, ARM_CONFIG_FILE
 )
 
 class ESP32Client:
@@ -16,9 +17,6 @@ class ESP32Client:
         # System status
         self.system_enabled = True
         
-        # Exact angles (in transit) vs target angles (commanded goal)
-        self.current_angles = {k: float(v) for k, v in DEFAULT_HOME_CONFIG.items()}
-        self.target_angles = dict(DEFAULT_HOME_CONFIG)
         self.speed = 60
         self.is_moving = False
         self.home_config = dict(DEFAULT_HOME_CONFIG)
@@ -34,8 +32,43 @@ class ESP32Client:
             "ombro_master": 27
         }
 
+        # Load persisted home configuration & pin assignments if existing
+        self._load_persisted_config()
+
+        # Exact angles (in transit) vs target angles (commanded goal)
+        self.current_angles = {k: float(v) for k, v in self.home_config.items()}
+        self.target_angles = dict(self.home_config)
+
         self.last_check_time = 0.0
         self._client: httpx.AsyncClient | None = None
+
+    def _load_persisted_config(self):
+        """Loads saved home_config and pins mapping from disk if available."""
+        if ARM_CONFIG_FILE.exists():
+            try:
+                with open(ARM_CONFIG_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if "home_config" in data and isinstance(data["home_config"], dict):
+                        for k, v in data["home_config"].items():
+                            if k in self.home_config:
+                                self.home_config[k] = int(v)
+                    if "pins" in data and isinstance(data["pins"], dict):
+                        for k, v in data["pins"].items():
+                            if k in self.pins_mapping:
+                                self.pins_mapping[k] = int(v)
+            except Exception as e:
+                print(f"[ESP32Client] Erro ao carregar {ARM_CONFIG_FILE.name}: {e}")
+
+    def _save_persisted_config(self):
+        """Saves current home_config and pins mapping to disk."""
+        try:
+            with open(ARM_CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump({
+                    "home_config": self.home_config,
+                    "pins": self.pins_mapping
+                }, f, indent=2)
+        except Exception as e:
+            print(f"[ESP32Client] Erro ao salvar {ARM_CONFIG_FILE.name}: {e}")
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -156,7 +189,7 @@ class ESP32Client:
                 max_val = lim.get("max", 180) if isinstance(lim, dict) else lim[1]
                 val = max(min_val, min(max_val, int(v)))
                 self.target_angles[k] = val
-                if not self.is_connected:
+                if not self.is_connected and self.speed >= 120:
                     self.current_angles[k] = float(val)
 
         self.is_moving = any(
@@ -194,18 +227,35 @@ class ESP32Client:
         """Moves arm to the configured home position."""
         return await self.send_move(self.home_config, speed=35)
 
-    def set_home_config(self, new_config: dict) -> dict:
-        """Updates the default/custom home position for each joint."""
+    async def set_home_config(self, new_config: dict) -> dict:
+        """Updates the default/custom home position for each joint, persists to disk and notifies ESP32."""
         for k, v in new_config.items():
             if k in self.home_config:
                 self.home_config[k] = int(v)
+
+        self._save_persisted_config()
+
+        if self.is_connected:
+            try:
+                client = self._get_client()
+                await client.post(
+                    f"{self.base_url}/home/config",
+                    data={k: str(v) for k, v in self.home_config.items()},
+                    params=self.home_config,
+                    timeout=2.0
+                )
+            except Exception as e:
+                print(f"[ESP32Client] Erro ao sincronizar home/config com ESP32: {e}")
+
         return {"success": True, "home_config": self.home_config}
 
     async def set_pins(self, new_pins: dict) -> dict:
-        """Updates dynamic GPIO pin assignments for servos."""
+        """Updates dynamic GPIO pin assignments for servos and persists to disk."""
         for k, v in new_pins.items():
             if k in self.pins_mapping:
                 self.pins_mapping[k] = int(v)
+
+        self._save_persisted_config()
 
         if self.is_connected:
             try:

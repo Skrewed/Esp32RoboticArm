@@ -6,7 +6,7 @@ import asyncio
 import subprocess
 import httpx
 import numpy as np
-from server.config import GROQ_API_KEY, MISTRAL_API_KEY
+from server.config import GROQ_API_KEY, MISTRAL_API_KEY, get_ffmpeg_executable
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 MISTRAL_BASE_URL = "https://api.mistral.ai/v1"
@@ -36,8 +36,9 @@ class AIService:
     def _convert_to_wav(self, audio_bytes: bytes) -> bytes:
         """Converts arbitrary audio bytes (webm, pcm, ogg, etc.) to 16kHz 16-bit mono WAV using ffmpeg."""
         try:
+            ffmpeg_exe = get_ffmpeg_executable()
             process = subprocess.Popen(
-                ["ffmpeg", "-y", "-i", "pipe:0", "-ar", "16000", "-ac", "1", "-f", "wav", "pipe:1"],
+                [ffmpeg_exe, "-y", "-i", "pipe:0", "-ar", "16000", "-ac", "1", "-f", "wav", "pipe:1"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
@@ -52,8 +53,9 @@ class AIService:
     def _convert_mp3_to_pcm(self, mp3_bytes: bytes, sample_rate=16000) -> bytes:
         """Converts MP3 audio to raw 16-bit signed PCM mono for ESP32 I2S output."""
         try:
+            ffmpeg_exe = get_ffmpeg_executable()
             process = subprocess.Popen(
-                ["ffmpeg", "-y", "-i", "pipe:0", "-ar", str(sample_rate), "-ac", "1", "-f", "s16le", "pipe:1"],
+                [ffmpeg_exe, "-y", "-i", "pipe:0", "-ar", str(sample_rate), "-ac", "1", "-f", "s16le", "pipe:1"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE

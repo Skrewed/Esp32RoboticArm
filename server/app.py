@@ -116,8 +116,13 @@ async def move_arm(cmd: MoveCommand):
     await broadcast_telemetry()
     return result
 
+class HomeCommand(BaseModel):
+    angles: dict | None = None
+
 @app.post("/api/home")
-async def bring_home():
+async def bring_home(cmd: HomeCommand | None = None):
+    if cmd and cmd.angles:
+        await esp32_client.set_home_config(cmd.angles)
     result = await esp32_client.send_home()
     await broadcast_telemetry()
     return result
@@ -127,14 +132,18 @@ class HomeConfigUpdate(BaseModel):
 
 @app.post("/api/home/config")
 async def update_home_config(data: HomeConfigUpdate):
-    return esp32_client.set_home_config(data.config)
+    result = await esp32_client.set_home_config(data.config)
+    await broadcast_telemetry()
+    return result
 
 class PinConfigUpdate(BaseModel):
     pins: dict
 
 @app.post("/api/pins")
 async def update_pins(data: PinConfigUpdate):
-    return await esp32_client.set_pins(data.pins)
+    result = await esp32_client.set_pins(data.pins)
+    await broadcast_telemetry()
+    return result
 
 # ==================== MUSIC & DANCING APIS ====================
 

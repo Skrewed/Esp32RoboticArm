@@ -1,4 +1,6 @@
 import os
+import sys
+import shutil
 from pathlib import Path
 
 # Base paths
@@ -9,6 +11,56 @@ MODELS_3D_DIR = (BASE_DIR / "artefatos" / "3d") if (BASE_DIR / "artefatos" / "3d
 MODELS_3D_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR = BASE_DIR / "server" / "media"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+ARM_CONFIG_FILE = BASE_DIR / "server" / "arm_config.json"
+
+# Ensure venv Scripts and standard Windows utility folders are in os.environ["PATH"]
+VENV_SCRIPTS = BASE_DIR / "venv" / "Scripts"
+EXTRA_PATH_DIRS = [
+    str(VENV_SCRIPTS),
+    r"C:\ffmpeg\bin",
+    r"C:\Program Files\nodejs",
+    r"C:\Program Files (x86)\nodejs"
+]
+for p in EXTRA_PATH_DIRS:
+    if os.path.exists(p) and p.lower() not in os.environ.get("PATH", "").lower():
+        os.environ["PATH"] = p + os.pathsep + os.environ.get("PATH", "")
+
+def get_ffmpeg_executable() -> str:
+    """Finds absolute path to ffmpeg executable with fallbacks."""
+    which = shutil.which("ffmpeg")
+    if which:
+        return which
+    candidates = [
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+        r"C:\ProgramData\chocolatey\bin\ffmpeg.exe",
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return "ffmpeg"
+
+def get_ffmpeg_dir() -> str | None:
+    """Returns directory containing ffmpeg binary for tools like yt-dlp."""
+    exe = get_ffmpeg_executable()
+    if os.path.isabs(exe) and os.path.exists(exe):
+        return str(Path(exe).parent)
+    which = shutil.which("ffmpeg")
+    return str(Path(which).parent) if which else None
+
+def get_node_executable() -> str | None:
+    """Finds absolute path to node executable for yt-dlp JS runtime."""
+    which = shutil.which("node")
+    if which:
+        return which
+    candidates = [
+        r"C:\Program Files\nodejs\node.exe",
+        r"C:\Program Files (x86)\nodejs\node.exe",
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
 
 # Initialize API keys strictly from environment or .env file (NEVER hardcode secrets in source code)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", os.getenv("groq", ""))

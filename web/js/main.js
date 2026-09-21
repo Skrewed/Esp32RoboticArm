@@ -126,8 +126,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (data.pins) {
       pinMgr.currentMapping = data.pins;
     }
-    if (data.home_config) {
-      homeMgr.homeConfig = data.home_config;
+    if (data.home_config && homeMgr) {
+      homeMgr.onTelemetry(data.home_config);
     }
 
     if (inputIp && document.activeElement !== inputIp && data.ip) {
