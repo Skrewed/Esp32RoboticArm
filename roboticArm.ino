@@ -485,18 +485,45 @@ void handlePins() {
   enviarJson(200, json);
 }
 
+void handleAudioUpload() {
+  // Callback chamado durante o recebimento do upload de áudio.
+  // Os chunks PCM recebidos são enviados diretamente para o I2S do alto-falante.
+  if (!i2sIniciado) {
+    return;
+  }
+
+  HTTPUpload& upload = server.upload();
+
+  if (upload.status == UPLOAD_FILE_WRITE && upload.currentSize > 0) {
+    size_t bytesEscritos = 0;
+    esp_err_t resultado = i2s_write(
+      I2S_SPK_PORT,
+      upload.buf,
+      upload.currentSize,
+      &bytesEscritos,
+      portMAX_DELAY
+    );
+
+    if (resultado != ESP_OK || bytesEscritos != upload.currentSize) {
+      Serial.printf(
+        "[Áudio TX] Falha ao escrever no I2S. erro=%d, recebido=%u, escrito=%u\n",
+        resultado,
+        (unsigned int)upload.currentSize,
+        (unsigned int)bytesEscritos
+      );
+    }
+  }
+}
+
 void handleAudioStream() {
-  // Recebe chunk PCM binário via POST HTTP e envia para o I2S do alto-falante MAX98357A
+  // Esta função é chamada uma única vez ao final da requisição HTTP.
+  // O áudio em si é processado por handleAudioUpload().
   if (!i2sIniciado) {
     enviarJson(500, "{\"sucesso\":false,\"erro\":\"I2S_NOT_READY\"}");
     return;
   }
-  HTTPUpload& upload = server.upload();
-  if (upload.status == UPLOAD_FILE_WRITE) {
-    size_t bytesEscritos = 0;
-    i2s_write(I2S_SPK_PORT, upload.buf, upload.currentSize, &bytesEscritos, portMAX_DELAY);
-  }
-  enviarJson(200, "{\"sucesso\":true}");
+
+  enviarJson(200, "{\"sucesso\":true,\"mensagem\":\"Audio recebido\"}");
 }
 
 void handleMicCapture() {
@@ -504,19 +531,47 @@ void handleMicCapture() {
     enviarJson(500, "{\"sucesso\":false,\"erro\":\"I2S_NOT_READY\"}");
     return;
   }
-  // Captura chunk de áudio estéreo cru dos microfones INMP441
-  const size_t BUFFER_SIZE = 16000; // ~0.25s por chunk a 16kHz estéreo 16bit
+
+  // Captura PCM estéreo cru dos microfones INMP441.
+  // 16 kHz x 16 bits x 2 canais = 64000 bytes/s.
+  // Um buffer de 16000 bytes corresponde a aproximadamente 0,25 s.
+  const size_t BUFFER_SIZE = 16000;
+
   uint8_t* audioBuf = (uint8_t*)malloc(BUFFER_SIZE);
   if (!audioBuf) {
     enviarJson(500, "{\"sucesso\":false,\"erro\":\"OUT_OF_MEMORY\"}");
     return;
   }
+
   size_t bytesLidos = 0;
-  i2s_read(I2S_MIC_PORT, audioBuf, BUFFER_SIZE, &bytesLidos, pdMS_TO_TICKS(600));
+  esp_err_t resultado = i2s_read(
+    I2S_MIC_PORT,
+    audioBuf,
+    BUFFER_SIZE,
+    &bytesLidos,
+    pdMS_TO_TICKS(600)
+  );
+
+  if (resultado != ESP_OK || bytesLidos == 0) {
+    Serial.printf(
+      "[Áudio RX] Falha na captura. erro=%d, bytes=%u\n",
+      resultado,
+      (unsigned int)bytesLidos
+    );
+    free(audioBuf);
+    enviarJson(500, "{\"sucesso\":false,\"erro\":\"MIC_READ_FAILED\"}");
+    return;
+  }
 
   adicionarCors();
   server.sendHeader("Content-Disposition", "attachment; filename=\"mic.raw\"");
-  server.send(200, "application/octet-stream", (const char*)audioBuf, bytesLidos);
+
+  // WebServer do Arduino-ESP32 3.x não possui send(code, type, char*, length).
+  // Primeiro informamos o tamanho, enviamos os cabeçalhos e depois o buffer binário.
+  server.setContentLength(bytesLidos);
+  server.send(200, "application/octet-stream", "");
+  server.sendContent(reinterpret_cast<const char*>(audioBuf), bytesLidos);
+
   free(audioBuf);
 }
 
@@ -539,7 +594,7 @@ void configurarRotas() {
   server.on("/habilitar", HTTP_GET, []() { sistemaHabilitado = true; enviarJson(200, "{\"sucesso\":true}"); });
   server.on("/desabilitar", HTTP_GET, []() { sistemaHabilitado = false; desanexarTodos(); enviarJson(200, "{\"sucesso\":true}"); });
   server.on("/stop", HTTP_GET, []() { pararMovimentos(); enviarJson(200, "{\"sucesso\":true}"); });
-  server.on("/audio/stream", HTTP_POST, handleAudioStream);
+  server.on("/audio/stream", HTTP_POST, handleAudioStream, handleAudioUpload);
   server.on("/mic/capture", HTTP_GET, handleMicCapture);
 
   server.onNotFound([]() {
