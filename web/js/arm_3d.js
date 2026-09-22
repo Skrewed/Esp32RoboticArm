@@ -23,6 +23,16 @@ class Arm3DVisualizer {
     this.targetAngles = { ...this.currentAngles };
     this.lastRenderTime = performance.now();
 
+    // Limites de movimento dinâmicos dos eixos (0 a 180° físicos)
+    this.limits = {
+      base_rotacao: { min: 15, max: 165 },
+      ombro: { min: 35, max: 145 },
+      cotovelo: { min: 25, max: 105 },
+      punho: { min: 35, max: 145 },
+      garra_rotacao: { min: 0, max: 180 },
+      garra_abertura: { min: 45, max: 135 }
+    };
+
     // Dimensões cinemáticas exatas do CAD (em milímetros)
     this.H_BASE = 105.0;      // Altura da bancada ao pivô do ombro
     this.Z_SHOULDER = 26.0;   // Offset para frente do pivô do ombro
@@ -449,6 +459,18 @@ class Arm3DVisualizer {
     });
   }
 
+  setLimits(newLimits) {
+    if (!newLimits || typeof newLimits !== "object") return;
+    for (const [k, v] of Object.entries(newLimits)) {
+      if (this.limits[k] && v) {
+        this.limits[k] = {
+          min: typeof v.min === "number" ? v.min : this.limits[k].min,
+          max: typeof v.max === "number" ? v.max : this.limits[k].max
+        };
+      }
+    }
+  }
+
   toggleClaw() {
     this.clawStateOpen = !this.clawStateOpen;
     const targetAngle = this.clawStateOpen ? 125 : 65;
@@ -463,9 +485,9 @@ class Arm3DVisualizer {
   /**
    * Cinemática Inversa Analítica Exata com Limitações Mecânicas Anti-Crippling
    * - Erro posicional 0.000mm entre FK e IK
-   * - Restringe o Gimbal ao semi-espaço frontal (Z >= 45mm, base 15°..165°) eliminando giro de 180°
+   * - Restringe o Gimbal ao semi-espaço frontal (Z >= 45mm) eliminando giro de 180°
    * - Impede enterramento no chão (Y >= 35mm) e colisão com a base (Y >= 135mm sobre a base r <= 165mm)
-   * - Impede auto-interseção e colisão mecânica (Cotovelo estrito em 25°..105°, Ombro 35°..145°, Punho 35°..145°)
+   * - Impede auto-interseção e colisão mecânica usando os limites dinâmicos configurados
    * - Garante que o Gimbal permaneça permanentemente sincronizado à ponta da garra
    */
   solveInverseKinematics(targetPos) {
@@ -473,15 +495,20 @@ class Arm3DVisualizer {
     let ty = targetPos.y;
     let tz = targetPos.z;
 
+    const baseLim = this.limits?.base_rotacao || { min: 15.0, max: 165.0 };
+    const ombroLim = this.limits?.ombro || { min: 35.0, max: 145.0 };
+    const cotoveloLim = this.limits?.cotovelo || { min: 25.0, max: 105.0 };
+    const punhoLim = this.limits?.punho || { min: 35.0, max: 145.0 };
+
     // 1. Proteção Anti-Snap: semi-espaço frontal (+Z)
     if (tz < 45.0) {
       tz = 45.0;
     }
 
-    // 2. Base Yaw: azimute (15° a 165°, 90° alinhado com +Z frontal)
+    // 2. Base Yaw: azimute (90° alinhado com +Z frontal)
     let yawRad = Math.atan2(tx, tz);
     let baseDeg = 90.0 - (yawRad * 180.0 / Math.PI);
-    baseDeg = THREE.MathUtils.clamp(baseDeg, 15.0, 165.0);
+    baseDeg = THREE.MathUtils.clamp(baseDeg, baseLim.min, baseLim.max);
     yawRad = (90.0 - baseDeg) * Math.PI / 180.0;
 
     let r = Math.sqrt(tx * tx + tz * tz);
@@ -538,11 +565,10 @@ class Arm3DVisualizer {
     let targetPunhoDeg = 90.0 + (th_p - (-0.50)) / 0.8 * (180.0 / Math.PI);
 
     // 6. Limitações Mecânicas Reais Rígidas (Anti-Crippling & Proteção de Servos)
-    // O antebraço (On_Kol) penetra em Alt_Kol se cotovelo > 105°
-    const finalBase = THREE.MathUtils.clamp(baseDeg, 15.0, 165.0);
-    const finalOmbro = THREE.MathUtils.clamp(targetOmbroDeg, 35.0, 145.0);
-    const finalCotovelo = THREE.MathUtils.clamp(targetCotoveloDeg, 25.0, 105.0);
-    const finalPunho = THREE.MathUtils.clamp(targetPunhoDeg, 35.0, 145.0);
+    const finalBase = THREE.MathUtils.clamp(baseDeg, baseLim.min, baseLim.max);
+    const finalOmbro = THREE.MathUtils.clamp(targetOmbroDeg, ombroLim.min, ombroLim.max);
+    const finalCotovelo = THREE.MathUtils.clamp(targetCotoveloDeg, cotoveloLim.min, cotoveloLim.max);
+    const finalPunho = THREE.MathUtils.clamp(targetPunhoDeg, punhoLim.min, punhoLim.max);
 
     const rb = Math.round(finalBase);
     const ro = Math.round(finalOmbro);

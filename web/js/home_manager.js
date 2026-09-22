@@ -157,14 +157,16 @@ class HomeManager {
       garra_abertura: "Garra Abertura"
     };
 
-    const jointLimits = {
-      base_rotacao: { min: 15, max: 165 },
-      ombro: { min: 35, max: 145 },
-      cotovelo: { min: 25, max: 105 },
-      punho: { min: 35, max: 145 },
-      garra_rotacao: { min: 0, max: 180 },
-      garra_abertura: { min: 45, max: 135 }
-    };
+    const jointLimits = (window.limitsManager && typeof window.limitsManager.getJointLimits === "function")
+      ? window.limitsManager.getJointLimits()
+      : {
+          base_rotacao: { min: 15, max: 165 },
+          ombro: { min: 35, max: 145 },
+          cotovelo: { min: 25, max: 105 },
+          punho: { min: 35, max: 145 },
+          garra_rotacao: { min: 0, max: 180 },
+          garra_abertura: { min: 45, max: 135 }
+        };
 
     for (const [joint, val] of Object.entries(this.editingConfig)) {
       const lim = jointLimits[joint] || { min: 0, max: 180 };

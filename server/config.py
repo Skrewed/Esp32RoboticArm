@@ -140,12 +140,73 @@ DEFAULT_HOME_CONFIG = {
     "garra_abertura": 90
 }
 
-SERVO_LIMITS = {
-    "base_rotacao": {"min": 15, "max": 165, "default_pin": 25},
-    "ombro_master": {"min": 35, "max": 145, "default_pin": 27},
-    "ombro_slave": {"min": 35, "max": 145, "default_pin": 18},
-    "cotovelo": {"min": 25, "max": 105, "default_pin": 26},
-    "punho": {"min": 35, "max": 145, "default_pin": 19},
-    "garra_rotacao": {"min": 0, "max": 180, "default_pin": 14},
-    "garra_abertura": {"min": 45, "max": 135, "default_pin": 13}
+# 7 Servo Motors Limit Specifications (0° to 180° physical range, centered at 90° [-90° to +90°])
+DEFAULT_SERVO_LIMITS = {
+    "base_rotacao": {
+        "id": "base_rotacao",
+        "name": "Base (Rotação)",
+        "type": "MG996R",
+        "default_pin": 25,
+        "min": 15,
+        "max": 165,
+        "axis": "base"
+    },
+    "ombro_master": {
+        "id": "ombro_master",
+        "name": "Ombro (Motor Principal / Master)",
+        "type": "MG996R",
+        "default_pin": 27,
+        "min": 35,
+        "max": 145,
+        "axis": "ombro",
+        "role": "master"
+    },
+    "ombro_slave": {
+        "id": "ombro_slave",
+        "name": "Ombro (Motor Auxiliar / Slave)",
+        "type": "MG90S",
+        "default_pin": 18,
+        "min": 35,
+        "max": 145,
+        "axis": "ombro",
+        "role": "slave"
+    },
+    "cotovelo": {
+        "id": "cotovelo",
+        "name": "Cotovelo",
+        "type": "MG996R",
+        "default_pin": 26,
+        "min": 25,
+        "max": 105,
+        "axis": "cotovelo"
+    },
+    "punho": {
+        "id": "punho",
+        "name": "Punho (Inclinação / Pitch)",
+        "type": "MG90S",
+        "default_pin": 19,
+        "min": 35,
+        "max": 145,
+        "axis": "punho"
+    },
+    "garra_rotacao": {
+        "id": "garra_rotacao",
+        "name": "Garra (Rotação / Roll)",
+        "type": "MG90S",
+        "default_pin": 14,
+        "min": 0,
+        "max": 180,
+        "axis": "garra_rotacao"
+    },
+    "garra_abertura": {
+        "id": "garra_abertura",
+        "name": "Garra (Abertura / Pinça)",
+        "type": "MG90S",
+        "default_pin": 13,
+        "min": 45,
+        "max": 135,
+        "axis": "garra_abertura"
+    }
 }
+
+SERVO_LIMITS = DEFAULT_SERVO_LIMITS

@@ -10,11 +10,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // 2. Initialize Subsystems
   const pinMgr = new PinManager();
   const homeMgr = new HomeManager(arm);
+  const limitsMgr = new LimitsManager(arm, homeMgr);
   const musicCtrl = new MusicDanceController(arm);
   const aiCtrl = new AITalkController(arm);
 
   window.pinManager = pinMgr;
   window.homeManager = homeMgr;
+  window.limitsManager = limitsMgr;
   window.musicDanceController = musicCtrl;
   window.aiTalkController = aiCtrl;
   const inputIp = document.getElementById("esp-ip-input");
@@ -90,6 +92,29 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  window.updateRightPanelPinLabels = (pins) => {
+    if (!pins) return;
+    const base = document.getElementById("joint-title-base_rotacao");
+    if (base && pins.base_rotacao !== undefined) base.textContent = `Base Rotação (D${pins.base_rotacao})`;
+
+    const ombro = document.getElementById("joint-title-ombro");
+    if (ombro && pins.ombro_master !== undefined && pins.ombro_slave !== undefined) {
+      ombro.textContent = `Ombro (D${pins.ombro_master} / D${pins.ombro_slave})`;
+    }
+
+    const cotovelo = document.getElementById("joint-title-cotovelo");
+    if (cotovelo && pins.cotovelo !== undefined) cotovelo.textContent = `Cotovelo (D${pins.cotovelo})`;
+
+    const punho = document.getElementById("joint-title-punho");
+    if (punho && pins.punho !== undefined) punho.textContent = `Punho Pitch (D${pins.punho})`;
+
+    const garraRot = document.getElementById("joint-title-garra_rotacao");
+    if (garraRot && pins.garra_rotacao !== undefined) garraRot.textContent = `Garra Rotação (D${pins.garra_rotacao})`;
+
+    const garraAb = document.getElementById("joint-title-garra_abertura");
+    if (garraAb && pins.garra_abertura !== undefined) garraAb.textContent = `Garra Abertura (D${pins.garra_abertura})`;
+  };
+
   function handleTelemetry(data) {
     const badgeConn = document.getElementById("badge-esp-status");
     const badgeText = document.getElementById("esp-status-text");
@@ -111,10 +136,6 @@ document.addEventListener("DOMContentLoaded", () => {
       (aiCtrl && aiCtrl.isSteeringArm)
     );
 
-    // O modelo 3D só é atualizado pela telemetria se:
-    // 1) Uma rotina autônoma estiver em execução (música, busca por voz, bring home), OU
-    // 2) O usuário não estiver segurando o gimbal e não tiver interagido nos últimos 800ms
-    //    E o hardware real do ESP32 estiver conectado (refletindo o braço físico).
     if (data.angles && !arm.isHoldingGimbal) {
       if (isAutonomous) {
         arm.applyAllAngles(data.angles);
@@ -125,9 +146,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (data.pins) {
       pinMgr.currentMapping = data.pins;
+      if (limitsMgr) limitsMgr.updatePinMapping(data.pins);
+      window.updateRightPanelPinLabels(data.pins);
     }
     if (data.home_config && homeMgr) {
       homeMgr.onTelemetry(data.home_config);
+    }
+    if (data.limits && limitsMgr) {
+      limitsMgr.onTelemetry(data.limits);
     }
 
     if (inputIp && document.activeElement !== inputIp && data.ip) {
@@ -173,6 +199,13 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  const SVG_ICONS = {
+    sun: `<svg class="ui-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;fill:none;stroke:currentColor;display:inline-block;vertical-align:middle;"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`,
+    moon: `<svg class="ui-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;fill:none;stroke:currentColor;display:inline-block;vertical-align:middle;"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>`,
+    zap: `<svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;fill:none;stroke:currentColor;display:inline-block;vertical-align:middle;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>`,
+    loader: `<svg class="ui-icon spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;fill:none;stroke:currentColor;display:inline-block;vertical-align:middle;"><line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line></svg>`
+  };
+
   // 6. Top Bar Action Buttons
   const btnStop = document.getElementById("btn-emergency-stop");
   if (btnStop) {
@@ -189,6 +222,11 @@ document.addEventListener("DOMContentLoaded", () => {
     btnOpenPins.addEventListener("click", () => pinMgr.open());
   }
 
+  const btnOpenLimits = document.getElementById("btn-open-limits");
+  if (btnOpenLimits) {
+    btnOpenLimits.addEventListener("click", () => limitsMgr.openModal());
+  }
+
   const btnUpdateIp = document.getElementById("btn-update-ip");
   const btnConnectIcon = document.getElementById("btn-connect-icon");
   const btnConnectText = document.getElementById("btn-connect-text");
@@ -203,7 +241,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (btnUpdateIp) {
       btnUpdateIp.classList.add("loading");
-      if (btnConnectIcon) btnConnectIcon.textContent = "⏳";
+      if (btnConnectIcon) btnConnectIcon.innerHTML = SVG_ICONS.loader;
       if (btnConnectText) btnConnectText.textContent = "Testando...";
     }
 
@@ -216,17 +254,17 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await res.json();
       
       if (data.connected) {
-        showToast(`✅ Conectado ao ESP32 com sucesso! (${data.ip})`);
+        showToast(`Conectado ao ESP32 com sucesso! (${data.ip})`);
       } else {
-        showToast(`⚠️ ESP32 offline em ${data.ip}. Modo Simulado mantido.`);
+        showToast(`ESP32 offline em ${data.ip}. Modo Simulado mantido.`);
       }
     } catch (e) {
-      showToast("❌ Erro ao testar conexão com o servidor local.");
+      showToast("Erro ao testar conexão com o servidor local.");
     } finally {
       if (btnUpdateIp) {
         btnUpdateIp.classList.remove("loading");
-        if (btnConnectIcon) btnConnectIcon.textContent = "⚡";
-        if (btnConnectText) btnConnectText.textContent = "Testar Conexão";
+        if (btnConnectIcon) btnConnectIcon.innerHTML = SVG_ICONS.zap;
+        if (btnConnectText) btnConnectText.textContent = "Conectar";
       }
     }
   }
@@ -278,12 +316,12 @@ document.addEventListener("DOMContentLoaded", () => {
   function applyTheme(theme) {
     if (theme === "light") {
       document.body.classList.add("light-theme");
-      if (themeToggleIcon) themeToggleIcon.textContent = "🌙";
+      if (themeToggleIcon) themeToggleIcon.innerHTML = SVG_ICONS.moon;
       if (themeToggleText) themeToggleText.textContent = "Tema Escuro";
       if (arm) arm.setTheme("light");
     } else {
       document.body.classList.remove("light-theme");
-      if (themeToggleIcon) themeToggleIcon.textContent = "☀️";
+      if (themeToggleIcon) themeToggleIcon.innerHTML = SVG_ICONS.sun;
       if (themeToggleText) themeToggleText.textContent = "Tema Claro";
       if (arm) arm.setTheme("dark");
     }
@@ -299,7 +337,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const isCurrentlyLight = document.body.classList.contains("light-theme");
       const nextTheme = isCurrentlyLight ? "dark" : "light";
       applyTheme(nextTheme);
-      showToast(nextTheme === "light" ? "☀️ Tema Claro ativado!" : "🌙 Tema Escuro ativado!");
+      showToast(nextTheme === "light" ? "Tema Claro ativado!" : "Tema Escuro ativado!");
     });
   }
 });

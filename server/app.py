@@ -3,7 +3,7 @@ import json
 import time
 import asyncio
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect, BackgroundTasks, Request
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +27,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def add_no_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/web") or request.url.path == "/":
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 # Connected WebSocket clients for telemetry
 connected_clients = set()
 dance_running = False
@@ -40,6 +49,10 @@ app.mount("/web", StaticFiles(directory=str(STATIC_DIR)), name="web_assets")
 @app.get("/")
 async def root():
     return FileResponse(STATIC_DIR / "index.html")
+
+@app.get("/favicon.ico")
+async def favicon():
+    return FileResponse(STATIC_DIR / "favicon.svg", media_type="image/svg+xml")
 
 # ==================== ESP32 & TELEMETRY APIS ====================
 
@@ -139,9 +152,33 @@ async def update_home_config(data: HomeConfigUpdate):
 class PinConfigUpdate(BaseModel):
     pins: dict
 
+@app.get("/api/pins")
+async def get_pins():
+    return {
+        "success": True,
+        "pins": esp32_client.pins_mapping
+    }
+
 @app.post("/api/pins")
 async def update_pins(data: PinConfigUpdate):
     result = await esp32_client.set_pins(data.pins)
+    await broadcast_telemetry()
+    return result
+
+class LimitsUpdate(BaseModel):
+    limits: dict
+
+@app.get("/api/limits")
+async def get_limits():
+    return {
+        "success": True,
+        "limits": esp32_client.servo_limits,
+        "effective_shoulder": esp32_client.get_effective_shoulder_limits()
+    }
+
+@app.post("/api/limits")
+async def update_limits(data: LimitsUpdate):
+    result = await esp32_client.set_limits(data.limits)
     await broadcast_telemetry()
     return result
 
