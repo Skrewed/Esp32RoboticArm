@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import math
 import time
@@ -8,7 +9,9 @@ from pathlib import Path
 import numpy as np
 from scipy.io import wavfile
 from scipy.signal import find_peaks
-from server.config import UPLOADS_DIR
+from server.config import (
+    UPLOADS_DIR, get_ffmpeg_executable, get_ffmpeg_dir, get_node_executable
+)
 
 class MusicService:
     def __init__(self):
@@ -23,18 +26,26 @@ class MusicService:
     def download_youtube_audio(self, youtube_url: str) -> dict:
         """Downloads YouTube audio using yt-dlp and converts to MP3 & 16kHz WAV."""
         try:
-            import shutil
             output_template = str(UPLOADS_DIR / "yt_%(id)s.%(ext)s")
+            ffmpeg_exe = get_ffmpeg_executable()
+            ffmpeg_dir = get_ffmpeg_dir()
+            node_exe = get_node_executable()
+
+            # Always invoke yt-dlp via sys.executable to prevent Windows WinError 2
             cmd = [
-                "yt-dlp",
+                sys.executable,
+                "-m",
+                "yt_dlp",
                 "-x",
                 "--audio-format", "mp3",
                 "--audio-quality", "0",
                 "--no-playlist",
                 "-o", output_template
             ]
-            if shutil.which("node"):
-                cmd.extend(["--js-runtimes", "node"])
+            if ffmpeg_dir:
+                cmd.extend(["--ffmpeg-location", ffmpeg_dir])
+            if node_exe:
+                cmd.extend(["--js-runtimes", f"node:{node_exe}"])
             cmd.append(youtube_url)
 
             subprocess.run(cmd, check=True, capture_output=True, timeout=120)
@@ -50,14 +61,14 @@ class MusicService:
 
             # Convert to 16kHz WAV for analysis
             subprocess.run([
-                "ffmpeg", "-y", "-i", str(latest_mp3),
+                ffmpeg_exe, "-y", "-i", str(latest_mp3),
                 "-ar", "16000", "-ac", "1",
                 str(wav_path)
             ], check=True, capture_output=True, timeout=30)
 
             # Convert to 16kHz raw PCM for ESP32 I2S
             subprocess.run([
-                "ffmpeg", "-y", "-i", str(latest_mp3),
+                ffmpeg_exe, "-y", "-i", str(latest_mp3),
                 "-ar", "16000", "-ac", "1", "-f", "s16le",
                 str(pcm_path)
             ], check=True, capture_output=True, timeout=30)
@@ -85,6 +96,7 @@ class MusicService:
     def process_local_file(self, file_path: Path) -> dict:
         """Converts uploaded file to MP3, 16kHz WAV and raw PCM, then extracts choreography."""
         try:
+            ffmpeg_exe = get_ffmpeg_executable()
             mp3_path = file_path.with_suffix(".mp3")
             wav_path = file_path.with_suffix(".wav")
             pcm_path = file_path.with_suffix(".pcm")
@@ -92,21 +104,21 @@ class MusicService:
             # Ensure MP3 exists
             if file_path.suffix.lower() != ".mp3":
                 subprocess.run([
-                    "ffmpeg", "-y", "-i", str(file_path),
+                    ffmpeg_exe, "-y", "-i", str(file_path),
                     "-b:a", "192k",
                     str(mp3_path)
                 ], check=True, capture_output=True, timeout=30)
 
             # Convert to 16kHz WAV
             subprocess.run([
-                "ffmpeg", "-y", "-i", str(mp3_path),
+                ffmpeg_exe, "-y", "-i", str(mp3_path),
                 "-ar", "16000", "-ac", "1",
                 str(wav_path)
             ], check=True, capture_output=True, timeout=30)
 
             # Convert to raw PCM
             subprocess.run([
-                "ffmpeg", "-y", "-i", str(mp3_path),
+                ffmpeg_exe, "-y", "-i", str(mp3_path),
                 "-ar", "16000", "-ac", "1", "-f", "s16le",
                 str(pcm_path)
             ], check=True, capture_output=True, timeout=30)

@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 server/media/*
 !server/media/.gitkeep
+venv/
+.venv/
+server/arm_config.json
+

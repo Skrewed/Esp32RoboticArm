@@ -252,7 +252,17 @@ int calcularAnguloOmbroSlave(int anguloMaster) {
 }
 
 void definirAlvoOmbro(int angulo, int velocidade) {
-  int master = limitarAngulo(OMBRO_MASTER, angulo);
+  // Acoplamento coordenado dos 2 motores do ombro para evitar forçamento mecânico
+  // Ombro Master (MG996R) e Ombro Slave (MG90S Invertido: slave = 180 - master + offset)
+  // Para que o slave fique em [slave_min, slave_max], o master deve respeitar:
+  // master >= 180 + offset - slave_max  e  master <= 180 + offset - slave_min
+  int effMin = max(motores[OMBRO_MASTER].anguloMinimo, 180 + offsetOmbroSlave - motores[OMBRO_SLAVE].anguloMaximo);
+  int effMax = min(motores[OMBRO_MASTER].anguloMaximo, 180 + offsetOmbroSlave - motores[OMBRO_SLAVE].anguloMinimo);
+  if (effMin > effMax) {
+    effMin = motores[OMBRO_MASTER].anguloMinimo;
+    effMax = motores[OMBRO_MASTER].anguloMaximo;
+  }
+  int master = constrain(angulo, effMin, effMax);
   int slave = calcularAnguloOmbroSlave(master);
   definirAlvoMotor(OMBRO_MASTER, master, velocidade);
   definirAlvoMotor(OMBRO_SLAVE, slave, velocidade);
@@ -485,6 +495,72 @@ void handlePins() {
   enviarJson(200, json);
 }
 
+void handleLimits() {
+  if (server.method() == HTTP_POST) {
+    auto atualizarLimite = [&](int motorId, const char* minKey, const char* maxKey) {
+      if (server.hasArg(minKey)) {
+        motores[motorId].anguloMinimo = constrain(server.arg(minKey).toInt(), 0, 180);
+      }
+      if (server.hasArg(maxKey)) {
+        motores[motorId].anguloMaximo = constrain(server.arg(maxKey).toInt(), 0, 180);
+      }
+      if (motores[motorId].anguloMinimo > motores[motorId].anguloMaximo) {
+        int temp = motores[motorId].anguloMinimo;
+        motores[motorId].anguloMinimo = motores[motorId].anguloMaximo;
+        motores[motorId].anguloMaximo = temp;
+      }
+    };
+
+    atualizarLimite(GARRA_ABERTURA, "garra_abertura_min", "garra_abertura_max");
+    atualizarLimite(GARRA_ROTACAO,  "garra_rotacao_min",  "garra_rotacao_max");
+    atualizarLimite(PUNHO,          "punho_min",          "punho_max");
+    atualizarLimite(COTOVELO,       "cotovelo_min",       "cotovelo_max");
+    atualizarLimite(OMBRO_MASTER,   "ombro_master_min",   "ombro_master_max");
+    atualizarLimite(OMBRO_SLAVE,    "ombro_slave_min",    "ombro_slave_max");
+    atualizarLimite(BASE_ROTACAO,   "base_rotacao_min",   "base_rotacao_max");
+
+    if (server.hasArg("plain")) {
+      String corpo = server.arg("plain");
+      auto extrair = [&](const char* chave) -> int {
+        int idx = corpo.indexOf(chave);
+        if (idx < 0) return -999;
+        int col = corpo.indexOf(":", idx);
+        if (col < 0) return -999;
+        int fim = corpo.indexOf(",", col);
+        if (fim < 0) fim = corpo.indexOf("}", col);
+        if (fim < 0) fim = corpo.length();
+        String val = corpo.substring(col + 1, fim);
+        val.trim();
+        return val.toInt();
+      };
+
+      for (int i = 0; i < TOTAL_MOTORES; i++) {
+        String kMin = String("\"") + motores[i].nome + "_min\"";
+        String kMax = String("\"") + motores[i].nome + "_max\"";
+        int vMin = extrair(kMin.c_str());
+        int vMax = extrair(kMax.c_str());
+        if (vMin != -999) motores[i].anguloMinimo = constrain(vMin, 0, 180);
+        if (vMax != -999) motores[i].anguloMaximo = constrain(vMax, 0, 180);
+        if (motores[i].anguloMinimo > motores[i].anguloMaximo) {
+          int t = motores[i].anguloMinimo;
+          motores[i].anguloMinimo = motores[i].anguloMaximo;
+          motores[i].anguloMaximo = t;
+        }
+      }
+    }
+  }
+
+  String json = "{\"sucesso\":true,\"limits\":{";
+  for (int i = 0; i < TOTAL_MOTORES; i++) {
+    if (i > 0) json += ",";
+    json += "\"" + String(motores[i].nome) + "\":{";
+    json += "\"min\":" + String(motores[i].anguloMinimo) + ",";
+    json += "\"max\":" + String(motores[i].anguloMaximo) + "}";
+  }
+  json += "}}";
+  enviarJson(200, json);
+}
+
 void handleAudioUpload() {
   // Callback chamado durante o recebimento do upload de áudio.
   // Os chunks PCM recebidos são enviados diretamente para o I2S do alto-falante.
@@ -513,6 +589,7 @@ void handleAudioUpload() {
       );
     }
   }
+
 }
 
 void handleAudioStream() {
@@ -591,6 +668,8 @@ void configurarRotas() {
   server.on("/home/config", HTTP_POST, handleHomeConfig);
   server.on("/pins", HTTP_GET, handlePins);
   server.on("/pins", HTTP_POST, handlePins);
+  server.on("/limits", HTTP_GET, handleLimits);
+  server.on("/limits", HTTP_POST, handleLimits);
   server.on("/habilitar", HTTP_GET, []() { sistemaHabilitado = true; enviarJson(200, "{\"sucesso\":true}"); });
   server.on("/desabilitar", HTTP_GET, []() { sistemaHabilitado = false; desanexarTodos(); enviarJson(200, "{\"sucesso\":true}"); });
   server.on("/stop", HTTP_GET, []() { pararMovimentos(); enviarJson(200, "{\"sucesso\":true}"); });

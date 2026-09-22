@@ -1,9 +1,10 @@
+import json
 import time
 import asyncio
 import httpx
 from server.config import (
     ESP32_DEFAULT_IP, ESP32_PORT, TECHNICAL_PINS,
-    DEFAULT_HOME_CONFIG, SERVO_LIMITS
+    DEFAULT_HOME_CONFIG, DEFAULT_SERVO_LIMITS, ARM_CONFIG_FILE
 )
 
 class ESP32Client:
@@ -16,9 +17,6 @@ class ESP32Client:
         # System status
         self.system_enabled = True
         
-        # Exact angles (in transit) vs target angles (commanded goal)
-        self.current_angles = {k: float(v) for k, v in DEFAULT_HOME_CONFIG.items()}
-        self.target_angles = dict(DEFAULT_HOME_CONFIG)
         self.speed = 60
         self.is_moving = False
         self.home_config = dict(DEFAULT_HOME_CONFIG)
@@ -34,8 +32,79 @@ class ESP32Client:
             "ombro_master": 27
         }
 
+        # 7 Motors Limit ranges (0..180° physical range, centered at 90° [-90°..+90°])
+        self.servo_limits = {k: dict(v) for k, v in DEFAULT_SERVO_LIMITS.items()}
+
+        # Load persisted home configuration, pins, and servo limits if existing
+        self._load_persisted_config()
+
+        # Exact angles (in transit) vs target angles (commanded goal)
+        self.current_angles = {k: float(v) for k, v in self.home_config.items()}
+        self.target_angles = dict(self.home_config)
+
         self.last_check_time = 0.0
         self._client: httpx.AsyncClient | None = None
+
+    def get_effective_shoulder_limits(self) -> dict:
+        """
+        Calculates the safe, coupled physical motion limits for the shoulder joint.
+        The shoulder has 2 motors working together:
+          - ombro_master (MG996R)
+          - ombro_slave (MG90S, inverted: slave = 180 - master)
+        To ensure neither motor binds or is forced against mechanical limits:
+          eff_min = max(master_min, 180 - slave_max)
+          eff_max = min(master_max, 180 - slave_min)
+        """
+        master = self.servo_limits.get("ombro_master", {"min": 35, "max": 145})
+        slave = self.servo_limits.get("ombro_slave", {"min": 35, "max": 145})
+        eff_min = max(master["min"], 180 - slave["max"])
+        eff_max = min(master["max"], 180 - slave["min"])
+        if eff_min > eff_max:
+            eff_min = master["min"]
+            eff_max = master["max"]
+        return {"min": eff_min, "max": eff_max}
+
+    def _load_persisted_config(self):
+        """Loads saved home_config, pins mapping, and servo limits from disk if available."""
+        if ARM_CONFIG_FILE.exists():
+            try:
+                with open(ARM_CONFIG_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if "home_config" in data and isinstance(data["home_config"], dict):
+                        for k, v in data["home_config"].items():
+                            if k in self.home_config:
+                                self.home_config[k] = int(v)
+                    if "pins" in data and isinstance(data["pins"], dict):
+                        for k, v in data["pins"].items():
+                            if k in self.pins_mapping:
+                                self.pins_mapping[k] = int(v)
+                    if "limits" in data and isinstance(data["limits"], dict):
+                        for k, v in data["limits"].items():
+                            if k in self.servo_limits and isinstance(v, dict):
+                                min_v = max(0, min(180, int(v.get("min", self.servo_limits[k]["min"]))))
+                                max_v = max(0, min(180, int(v.get("max", self.servo_limits[k]["max"]))))
+                                if min_v > max_v:
+                                    min_v, max_v = max_v, min_v
+                                self.servo_limits[k]["min"] = min_v
+                                self.servo_limits[k]["max"] = max_v
+            except Exception as e:
+                print(f"[ESP32Client] Erro ao carregar {ARM_CONFIG_FILE.name}: {e}")
+
+    def _save_persisted_config(self):
+        """Saves current home_config, pins mapping, and servo limits to disk."""
+        try:
+            persisted_limits = {
+                k: {"min": v["min"], "max": v["max"]}
+                for k, v in self.servo_limits.items()
+            }
+            with open(ARM_CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump({
+                    "home_config": self.home_config,
+                    "pins": self.pins_mapping,
+                    "limits": persisted_limits
+                }, f, indent=2)
+        except Exception as e:
+            print(f"[ESP32Client] Erro ao salvar {ARM_CONFIG_FILE.name}: {e}")
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -147,16 +216,21 @@ class ESP32Client:
     async def send_move(self, angles: dict, speed: int = 60) -> dict:
         """Sends joint movement command to ESP32 or registers movement in simulator."""
         self.speed = max(1, min(180, int(speed)))
+        eff_shoulder = self.get_effective_shoulder_limits()
         
         # Clamp and store target angles
         for k, v in angles.items():
             if k in self.target_angles:
-                lim = SERVO_LIMITS.get(k) or SERVO_LIMITS.get("ombro_master" if k == "ombro" else k, {"min": 0, "max": 180})
-                min_val = lim.get("min", 0) if isinstance(lim, dict) else lim[0]
-                max_val = lim.get("max", 180) if isinstance(lim, dict) else lim[1]
-                val = max(min_val, min(max_val, int(v)))
+                if k == "ombro":
+                    # Coordinated dual-motor shoulder clamping
+                    val = max(eff_shoulder["min"], min(eff_shoulder["max"], int(v)))
+                else:
+                    lim = self.servo_limits.get(k, {"min": 0, "max": 180})
+                    min_val = lim.get("min", 0)
+                    max_val = lim.get("max", 180)
+                    val = max(min_val, min(max_val, int(v)))
                 self.target_angles[k] = val
-                if not self.is_connected:
+                if not self.is_connected and self.speed >= 120:
                     self.current_angles[k] = float(val)
 
         self.is_moving = any(
@@ -168,7 +242,7 @@ class ESP32Client:
             try:
                 client = self._get_client()
                 # Send with both query parameters and JSON body for universal compatibility
-                payload = {k: int(v) for k, v in angles.items()}
+                payload = {k: int(v) for k, v in self.target_angles.items()}
                 payload["speed"] = self.speed
                 resp = await client.post(
                     f"{self.base_url}/move",
@@ -194,18 +268,35 @@ class ESP32Client:
         """Moves arm to the configured home position."""
         return await self.send_move(self.home_config, speed=35)
 
-    def set_home_config(self, new_config: dict) -> dict:
-        """Updates the default/custom home position for each joint."""
+    async def set_home_config(self, new_config: dict) -> dict:
+        """Updates the default/custom home position for each joint, persists to disk and notifies ESP32."""
         for k, v in new_config.items():
             if k in self.home_config:
                 self.home_config[k] = int(v)
+
+        self._save_persisted_config()
+
+        if self.is_connected:
+            try:
+                client = self._get_client()
+                await client.post(
+                    f"{self.base_url}/home/config",
+                    data={k: str(v) for k, v in self.home_config.items()},
+                    params=self.home_config,
+                    timeout=2.0
+                )
+            except Exception as e:
+                print(f"[ESP32Client] Erro ao sincronizar home/config com ESP32: {e}")
+
         return {"success": True, "home_config": self.home_config}
 
     async def set_pins(self, new_pins: dict) -> dict:
-        """Updates dynamic GPIO pin assignments for servos."""
+        """Updates dynamic GPIO pin assignments for servos and persists to disk."""
         for k, v in new_pins.items():
             if k in self.pins_mapping:
                 self.pins_mapping[k] = int(v)
+
+        self._save_persisted_config()
 
         if self.is_connected:
             try:
@@ -279,6 +370,48 @@ class ESP32Client:
             print(f"[ESP32Client] Mic capture error: {e}")
         return b""
 
+    async def set_limits(self, new_limits: dict) -> dict:
+        """
+        Updates motion range limits (min and max, within 0..180 degrees) for each of the 7 motors.
+        Persists to arm_config.json and synchronizes with ESP32 if online.
+        """
+        for motor_id, lims in new_limits.items():
+            if motor_id in self.servo_limits and isinstance(lims, dict):
+                min_v = int(lims.get("min", self.servo_limits[motor_id]["min"]))
+                max_v = int(lims.get("max", self.servo_limits[motor_id]["max"]))
+                # Clamp within physical limits [0, 180]
+                min_v = max(0, min(180, min_v))
+                max_v = max(0, min(180, max_v))
+                if min_v > max_v:
+                    min_v, max_v = max_v, min_v
+                self.servo_limits[motor_id]["min"] = min_v
+                self.servo_limits[motor_id]["max"] = max_v
+
+        self._save_persisted_config()
+
+        if self.is_connected:
+            try:
+                client = self._get_client()
+                # Prepare payload for ESP32 /limits
+                payload = {}
+                for m_id, lim in self.servo_limits.items():
+                    payload[f"{m_id}_min"] = lim["min"]
+                    payload[f"{m_id}_max"] = lim["max"]
+                await client.post(
+                    f"{self.base_url}/limits",
+                    params=payload,
+                    json=payload,
+                    timeout=2.0
+                )
+            except Exception as e:
+                print(f"[ESP32Client] Erro ao sincronizar limits com ESP32: {e}")
+
+        return {
+            "success": True,
+            "limits": self.servo_limits,
+            "effective_shoulder": self.get_effective_shoulder_limits()
+        }
+
     def get_status(self) -> dict:
         return {
             "success": True,
@@ -292,7 +425,9 @@ class ESP32Client:
             "target_angles": dict(self.target_angles),
             "home_config": self.home_config,
             "pins": self.pins_mapping,
-            "technical_pins": TECHNICAL_PINS
+            "technical_pins": TECHNICAL_PINS,
+            "limits": self.servo_limits,
+            "effective_shoulder": self.get_effective_shoulder_limits()
         }
 
 esp32_client = ESP32Client()
