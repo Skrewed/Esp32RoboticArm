@@ -70,6 +70,8 @@ class ESP32Client:
             try:
                 with open(ARM_CONFIG_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                    if "esp32_ip" in data and isinstance(data["esp32_ip"], str) and data["esp32_ip"].strip():
+                        self.set_ip(data["esp32_ip"], save=False)
                     if "home_config" in data and isinstance(data["home_config"], dict):
                         for k, v in data["home_config"].items():
                             if k in self.home_config:
@@ -91,7 +93,7 @@ class ESP32Client:
                 print(f"[ESP32Client] Erro ao carregar {ARM_CONFIG_FILE.name}: {e}")
 
     def _save_persisted_config(self):
-        """Saves current home_config, pins mapping, and servo limits to disk."""
+        """Saves current home_config, pins mapping, servo limits, and esp32_ip to disk."""
         try:
             persisted_limits = {
                 k: {"min": v["min"], "max": v["max"]}
@@ -99,6 +101,7 @@ class ESP32Client:
             }
             with open(ARM_CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump({
+                    "esp32_ip": self.ip,
                     "home_config": self.home_config,
                     "pins": self.pins_mapping,
                     "limits": persisted_limits
@@ -114,8 +117,8 @@ class ESP32Client:
             )
         return self._client
 
-    def set_ip(self, raw_ip: str) -> str:
-        """Sanitizes raw IP/URL input and extracts port if specified."""
+    def set_ip(self, raw_ip: str, save: bool = True) -> str:
+        """Sanitizes raw IP/URL input, extracts port if specified, and persists."""
         ip = raw_ip.strip()
         if ip.startswith("http://"):
             ip = ip[7:]
@@ -131,6 +134,8 @@ class ESP32Client:
         if "/" in ip:
             ip = ip.split("/", 1)[0]
         self.ip = ip
+        if save:
+            self._save_persisted_config()
         return self.ip
 
     @property

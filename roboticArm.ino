@@ -3,6 +3,7 @@
 #include <ESP32Servo.h>
 #include <driver/i2s.h>
 #include <Preferences.h>
+#include <ESPmDNS.h>
 
 /*
   ============================================================
@@ -40,15 +41,16 @@
 //  >>> CONFIGURAÇÕES DE REDE & IP DO ESP32 (ALTERE AQUI ANTES DE FAZER O FLASH) <<<
 // ==============================================================================
 
-// 1. CONEXÃO COM SEU ROTEADOR WI-FI (MODO STATION)
-// Coloque o nome da sua rede (2.4 GHz) e a senha para o ESP32 conectar no seu roteador:
-const char* STA_SSID     = "SUA_REDE_WIFI";       // <-- NOME DO SEU WI-FI (2.4GHz)
-const char* STA_PASSWORD = "SUA_SENHA_WIFI";     // <-- SENHA DO SEU WI-FI
+// 1. CONEXÃO COM ROTEADOR WI-FI OU HOTSPOT (CELULAR 4G/5G OU NOTEBOOK) - MODO STATION
+// Coloque o nome da rede (2.4 GHz) e a senha (ex: Hotspot do seu celular ou do notebook):
+const char* STA_SSID     = "SUA_REDE_WIFI";       // <-- NOME DO WI-FI OU HOTSPOT (2.4GHz)
+const char* STA_PASSWORD = "SUA_SENHA_WIFI";     // <-- SENHA DO WI-FI OU HOTSPOT
 
-// Defina 'true' para fixar o IP do ESP32 na sua rede local, ou 'false' para obter IP dinâmico via DHCP:
-const bool  USAR_IP_ESTATICO_STA = true;
+// Defina 'false' para obter IP automático via DHCP (RECOMENDADO para Hotspot de Celular/Notebook)
+// Defina 'true' apenas se desejar fixar um IP estático na sua rede local:
+const bool  USAR_IP_ESTATICO_STA = false;
 
-// IP Estático desejado para o ESP32 na sua rede local:
+// IP Estático (usado somente se USAR_IP_ESTATICO_STA = true):
 IPAddress   ESP32_IP_FIXO(192, 168, 1, 150);      // <--- DEFINE O IP DO ESP32 AQUI (ex: 192.168.1.150)
 IPAddress   ESP32_GATEWAY(192, 168, 1, 1);        // <--- IP DO SEU ROTEADOR (GATEWAY)
 IPAddress   ESP32_SUBNET(255, 255, 255, 0);       // <--- MÁSCARA DE REDE (Padrão: 255.255.255.0)
@@ -896,6 +898,12 @@ void setup() {
       Serial.print(WiFi.softAPIP());
       Serial.println(")");
     }
+  }
+
+  // Iniciar serviço mDNS (permite acessar http://braco-esp32.local sem precisar saber o IP)
+  if (MDNS.begin("braco-esp32")) {
+    MDNS.addService("http", "tcp", 80);
+    Serial.println("[mDNS] Respondedor ativo: http://braco-esp32.local");
   }
 
   configurarRotas();

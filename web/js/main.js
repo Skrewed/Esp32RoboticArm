@@ -127,6 +127,11 @@ document.addEventListener("DOMContentLoaded", () => {
       badgeText.textContent = "Simulador Virtual";
     }
 
+    if (inputIp && data.ip && !inputIp.dataset.userEdited && document.activeElement !== inputIp) {
+      inputIp.value = data.ip;
+      inputIp.dataset.userEdited = "true";
+    }
+
     const now = performance.now();
     const userRecentlyInteracted = (now - lastUserInteractionTime) < 800;
     const isAutonomous = Boolean(
