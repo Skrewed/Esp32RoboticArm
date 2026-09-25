@@ -127,6 +127,11 @@ document.addEventListener("DOMContentLoaded", () => {
       badgeText.textContent = "Simulador Virtual";
     }
 
+    if (inputIp && data.ip && !inputIp.dataset.userEdited && document.activeElement !== inputIp) {
+      inputIp.value = data.ip;
+      inputIp.dataset.userEdited = "true";
+    }
+
     const now = performance.now();
     const userRecentlyInteracted = (now - lastUserInteractionTime) < 800;
     const isAutonomous = Boolean(
@@ -189,12 +194,17 @@ document.addEventListener("DOMContentLoaded", () => {
         arm.setJointAngle(joint, v);
         arm.syncGimbalToClawTip();
         updateAngleDisplays(arm.currentAngles);
-        sendJointMovement(arm.targetAngles, 65);
+        // Motores do punho e garras usam velocidade mais rápida para resposta imediata
+        const isFastJoint = (joint === "punho" || joint === "garra_rotacao" || joint === "garra_abertura");
+        const speed = isFastJoint ? 110 : 65;
+        sendJointMovement(arm.targetAngles, speed);
       });
       slider.addEventListener("change", () => {
         lastUserInteractionTime = performance.now();
         arm.syncGimbalToClawTip();
-        sendJointMovement(arm.targetAngles, 60);
+        const isFastJoint = (joint === "punho" || joint === "garra_rotacao" || joint === "garra_abertura");
+        const speed = isFastJoint ? 110 : 60;
+        sendJointMovement(arm.targetAngles, speed);
       });
     }
   });
