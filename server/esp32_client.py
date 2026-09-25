@@ -144,6 +144,7 @@ class ESP32Client:
             resp = await client.get(f"{self.base_url}/status", timeout=1.2)
             if resp.status_code == 200:
                 data = resp.json()
+                was_disconnected = not self.is_connected
                 self.is_connected = True
                 self.is_simulated = False
                 self.system_enabled = data.get("habilitado", True)
@@ -158,6 +159,10 @@ class ESP32Client:
                         self.current_angles[key] = float(atual)
                     if key in self.target_angles and alvo is not None:
                         self.target_angles[key] = int(alvo)
+
+                # Se acabou de conectar/reconectar, sincroniza imediatamente as configurações salvas (Home, Pinos e Limites)
+                if was_disconnected:
+                    asyncio.create_task(self.sync_all_persisted_to_esp32())
                 return True
         except Exception:
             pass
@@ -165,6 +170,40 @@ class ESP32Client:
         self.is_connected = False
         self.is_simulated = True
         return False
+
+    async def sync_all_persisted_to_esp32(self):
+        """Pushes persisted home_config, pins_mapping, and servo_limits to the ESP32 upon connection."""
+        if not self.is_connected:
+            return
+        try:
+            client = self._get_client()
+            # 1. Sincroniza Posição Home salva
+            await client.post(
+                f"{self.base_url}/home/config",
+                data={k: str(v) for k, v in self.home_config.items()},
+                params=self.home_config,
+                timeout=2.0
+            )
+            # 2. Sincroniza Mapeamento de Pinos
+            await client.post(
+                f"{self.base_url}/pins",
+                json=self.pins_mapping,
+                timeout=2.0
+            )
+            # 3. Sincroniza Limites dos 7 Motores
+            limits_payload = {}
+            for m_id, lim in self.servo_limits.items():
+                limits_payload[f"{m_id}_min"] = lim["min"]
+                limits_payload[f"{m_id}_max"] = lim["max"]
+            await client.post(
+                f"{self.base_url}/limits",
+                params=limits_payload,
+                json=limits_payload,
+                timeout=2.0
+            )
+            print("[ESP32Client] Configurações persistidas (Home, Pinos e Limites) sincronizadas com o ESP32!")
+        except Exception as e:
+            print(f"[ESP32Client] Aviso: Falha ao sincronizar configurações com ESP32: {e}")
 
     async def poll_hardware_telemetry(self) -> bool:
         """Queries the ultra-fast /telemetry endpoint on ESP32 in real time."""
@@ -191,19 +230,20 @@ class ESP32Client:
     def step_simulation(self, dt: float = 0.033) -> bool:
         """
         Simulates step-by-step physical servo motor kinematics in real time.
-        Each servo moves at `self.speed` degrees per second, exactly mirroring
-        the ESP32 firmware's atualizarMovimentos() timing!
+        Wrist and claw micro-servos (MG90S) move 2.5x faster for high responsiveness.
         """
         changed = False
         any_moving = False
-        # Degrees to advance in this dt step
-        step = max(5.0, float(self.speed)) * dt
+        base_speed = max(5.0, float(self.speed))
 
         for joint, target in self.target_angles.items():
             curr = self.current_angles.get(joint, float(target))
             diff = float(target) - curr
             if abs(diff) > 0.01:
                 any_moving = True
+                # Punho e garras (MG90S) se movem 2.5x mais rápido
+                joint_speed = base_speed * 2.5 if joint in ("punho", "garra_rotacao", "garra_abertura") else base_speed
+                step = joint_speed * dt
                 if abs(diff) <= step:
                     self.current_angles[joint] = float(target)
                 else:

@@ -143,6 +143,13 @@ async def bring_home(cmd: HomeCommand | None = None):
 class HomeConfigUpdate(BaseModel):
     config: dict
 
+@app.get("/api/home/config")
+async def get_home_config():
+    return {
+        "success": True,
+        "home_config": esp32_client.home_config
+    }
+
 @app.post("/api/home/config")
 async def update_home_config(data: HomeConfigUpdate):
     result = await esp32_client.set_home_config(data.config)

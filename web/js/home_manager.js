@@ -35,19 +35,17 @@ class HomeManager {
 
   async syncInitialConfigWithServer() {
     try {
-      const res = await fetch("/api/home/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config: this.homeConfig })
-      });
-      const data = await res.json();
-      if (data && data.home_config) {
-        this.homeConfig = { ...this.homeConfig, ...data.home_config };
-        this.editingConfig = { ...this.homeConfig };
-        localStorage.setItem("arm_custom_home", JSON.stringify(this.homeConfig));
+      const res = await fetch("/api/home/config");
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.home_config) {
+          this.homeConfig = { ...this.homeConfig, ...data.home_config };
+          this.editingConfig = { ...this.homeConfig };
+          localStorage.setItem("arm_custom_home", JSON.stringify(this.homeConfig));
+        }
       }
     } catch (e) {
-      console.warn("Não foi possível sincronizar homeConfig inicial:", e);
+      console.warn("Não foi possível carregar homeConfig do servidor:", e);
     }
   }
 

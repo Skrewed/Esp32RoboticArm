@@ -689,8 +689,10 @@ class Arm3DVisualizer {
         const current = this.currentAngles[joint];
         const diff = target - current;
         if (Math.abs(diff) > 0.05) {
-          // Interpolação suave a 60 FPS acompanhando a telemetria do ESP32
-          const factor = 1.0 - Math.exp(-24.0 * dt);
+          // Punho e garras (MG90S) se interpolam com resposta muito mais ágil e imediata
+          const isLightJoint = (joint === "punho" || joint === "garra_rotacao" || joint === "garra_abertura");
+          const responsiveness = isLightJoint ? 45.0 : 24.0;
+          const factor = 1.0 - Math.exp(-responsiveness * dt);
           const nextVal = current + diff * factor;
           this.setJointAngle(joint, nextVal);
           anyChanged = true;
