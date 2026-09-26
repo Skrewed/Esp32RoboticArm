@@ -34,6 +34,7 @@ def get_ffmpeg_executable() -> str:
         r"C:\ffmpeg\bin\ffmpeg.exe",
         r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
         r"C:\ProgramData\chocolatey\bin\ffmpeg.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin\ffmpeg.exe"),
     ]
     for c in candidates:
         if os.path.exists(c):

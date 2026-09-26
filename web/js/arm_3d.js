@@ -473,7 +473,8 @@ class Arm3DVisualizer {
 
   toggleClaw() {
     this.clawStateOpen = !this.clawStateOpen;
-    const targetAngle = this.clawStateOpen ? 125 : 65;
+    const clawLimits = (this.limits && this.limits["garra_abertura"]) || { min: 45, max: 135 };
+    const targetAngle = this.clawStateOpen ? clawLimits.max : clawLimits.min;
     this.targetAngles["garra_abertura"] = targetAngle;
     this.setJointAngle("garra_abertura", targetAngle);
 
@@ -549,7 +550,7 @@ class Arm3DVisualizer {
     const psi = Math.PI - gamma;
 
     const th_c = psi - (Math.PI / 2.0 - delta);
-    let targetCotoveloDeg = 90.0 + (th_c - 0.95) / 0.8 * (180.0 / Math.PI);
+    let targetCotoveloDeg = 90.0 + th_c * (180.0 / Math.PI);
 
     // Lei dos Cossenos para o Ombro
     const phi = Math.atan2(dy, Math.max(10.0, dr));
@@ -558,11 +559,11 @@ class Arm3DVisualizer {
     const alpha1 = phi + beta;
 
     const th_o = Math.PI / 2.0 - delta - alpha1;
-    let targetOmbroDeg = 90.0 + (th_o - (-0.45)) / 0.8 * (180.0 / Math.PI);
+    let targetOmbroDeg = 90.0 + th_o * (180.0 / Math.PI);
 
     // Punho para orientação horizontal (pitch = 0)
     const th_p = -desiredPitch - (th_o + th_c);
-    let targetPunhoDeg = 90.0 + (th_p - (-0.50)) / 0.8 * (180.0 / Math.PI);
+    let targetPunhoDeg = 90.0 + th_p * (180.0 / Math.PI);
 
     // 6. Limitações Mecânicas Reais Rígidas (Anti-Crippling & Proteção de Servos)
     const finalBase = THREE.MathUtils.clamp(baseDeg, baseLim.min, baseLim.max);
@@ -605,16 +606,13 @@ class Arm3DVisualizer {
         this.jointBaseYaw.rotation.y = -rad;
         break;
       case "ombro":
-        // Rotação negativa em X inclina para frente (+Z)
-        this.jointShoulder.rotation.x = -0.45 + rad * 0.8;
+        this.jointShoulder.rotation.x = rad;
         break;
       case "cotovelo":
-        // Rotação positiva em X flexiona o antebraço
-        this.jointElbow.rotation.x = 0.95 + rad * 0.8;
+        this.jointElbow.rotation.x = rad;
         break;
       case "punho":
-        // Rotação em X mantém a orientação do punho
-        this.jointWrist.rotation.x = -0.50 + rad * 0.8;
+        this.jointWrist.rotation.x = rad;
         break;
       case "garra_rotacao":
         this.jointClawRoll.rotation.z = rad;

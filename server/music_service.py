@@ -218,53 +218,52 @@ class MusicService:
             return [], 0.0
 
     def get_pose_at_time(self, current_sec: float) -> dict:
-        """Interpolates between choreography keyframes for smooth continuous servo motion."""
-        if not self.current_choreography:
-            # Fallback rhythmic ambient sway
-            base = int(90 + 25 * math.sin(current_sec * 2.0))
-            ombro = int(90 + 15 * math.cos(current_sec * 3.0))
-            cotovelo = int(90 - 15 * math.cos(current_sec * 3.0))
-            punho = int(90 + 20 * math.sin(current_sec * 4.0))
-            garra_rot = int(90 + 30 * math.sin(current_sec * 1.5))
-            garra_abertura = int(90 + 35 * math.sin(current_sec * 6.0))
-            return {
-                "base_rotacao": base,
-                "ombro": ombro,
-                "cotovelo": cotovelo,
-                "punho": punho,
-                "garra_rotacao": garra_rot,
-                "garra_abertura": int(np.clip(garra_abertura, 50, 130)),
-                "speed": 80
-            }
+        """Smoothly generates dance poses using continuous trigonometric functions tied to exact beat phases."""
+        beat_phase = 0.0
+        if not self.current_choreography or len(self.current_choreography) < 2:
+            beat_phase = current_sec * 2.0 # Fake 120 BPM fallback
+        else:
+            choreo = self.current_choreography
+            if current_sec <= choreo[0]["time"]:
+                beat_phase = 0.0
+            elif current_sec >= choreo[-1]["time"]:
+                beat_phase = float(len(choreo) - 1)
+            else:
+                for i in range(len(choreo) - 1):
+                    if choreo[i]["time"] <= current_sec <= choreo[i + 1]["time"]:
+                        dt = choreo[i + 1]["time"] - choreo[i]["time"]
+                        alpha = (current_sec - choreo[i]["time"]) / dt if dt > 0 else 0.0
+                        beat_phase = float(i) + alpha
+                        break
 
-        choreo = self.current_choreography
-        # Find adjacent keyframes
-        prev_kf = choreo[0]
-        next_kf = choreo[-1]
-
-        if current_sec <= prev_kf["time"]:
-            return prev_kf
-        if current_sec >= next_kf["time"]:
-            return next_kf
-
-        for i in range(len(choreo) - 1):
-            if choreo[i]["time"] <= current_sec <= choreo[i + 1]["time"]:
-                prev_kf = choreo[i]
-                next_kf = choreo[i + 1]
-                break
-
-        # Linear interpolation factor
-        dt = next_kf["time"] - prev_kf["time"]
-        alpha = (current_sec - prev_kf["time"]) / dt if dt > 0 else 0.0
-        # Smooth step (Hermite)
-        alpha = alpha * alpha * (3 - 2 * alpha)
-
-        interpolated = {}
-        for joint in ["base_rotacao", "ombro", "cotovelo", "punho", "garra_rotacao", "garra_abertura"]:
-            val = prev_kf[joint] + alpha * (next_kf[joint] - prev_kf[joint])
-            interpolated[joint] = int(round(val))
-
-        interpolated["speed"] = 90
-        return interpolated
+        # Calculate smooth harmonic dance movements driven by the beat phase
+        # math.cos(beat_phase * 2 * pi) == 1.0 EXACTLY on the beat, and -1.0 exactly off-beat
+        on_beat_bounce = (math.cos(beat_phase * 2.0 * math.pi) + 1.0) / 2.0 # 0.0 to 1.0 peaking on the beat
+        
+        # Base sways slowly (completes cycle every 8 beats)
+        base = 90 + 35 * math.sin(beat_phase * math.pi / 4.0)
+        
+        # Shoulder and elbow nod rhythmically on every beat
+        ombro = 90 - 25 * on_beat_bounce
+        cotovelo = 90 + 35 * on_beat_bounce
+        
+        # Wrist waves every 2 beats
+        punho = 90 + 30 * math.sin(beat_phase * math.pi)
+        
+        # Claw rotates smoothly back and forth
+        garra_rot = 90 + 50 * math.sin(beat_phase * math.pi / 2.0)
+        
+        # Claw snaps to the beat (abre no contratempo, fecha na batida)
+        garra_ab = 45 + 90 * (1.0 - on_beat_bounce)
+        
+        return {
+            "base_rotacao": int(np.clip(base, 25, 155)),
+            "ombro": int(np.clip(ombro, 40, 140)),
+            "cotovelo": int(np.clip(cotovelo, 40, 140)),
+            "punho": int(np.clip(punho, 30, 150)),
+            "garra_rotacao": int(np.clip(garra_rot, 20, 160)),
+            "garra_abertura": int(np.clip(garra_ab, 45, 135)),
+            "speed": 85
+        }
 
 music_service = MusicService()

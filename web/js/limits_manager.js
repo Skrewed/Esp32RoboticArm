@@ -22,23 +22,12 @@ class LimitsManager {
 			},
 			{
 				id: "ombro_master",
-				name: "Ombro Master (Motor Principal)",
-				type: "MG996R",
-				pin: 27,
+				name: "Ombro (Amplitude Total)",
+				type: "MG996R + MG90S",
+				pin: "27 & 18",
 				defaultMin: 35,
 				defaultMax: 145,
 				axis: "ombro",
-				role: "master",
-			},
-			{
-				id: "ombro_slave",
-				name: "Ombro Slave (Motor Auxiliar Invertido)",
-				type: "MG90S",
-				pin: 18,
-				defaultMin: 35,
-				defaultMax: 145,
-				axis: "ombro",
-				role: "slave",
 			},
 			{
 				id: "cotovelo",
@@ -392,32 +381,20 @@ class LimitsManager {
 	}
 
 	updateShoulderInfo() {
-		if (!this.shoulderInfoBox) return
-
-		const m = this.editingLimits["ombro_master"] || { min: 35, max: 145 }
-		const s = this.editingLimits["ombro_slave"] || { min: 35, max: 145 }
-		const eff = this.calculateEffectiveShoulder(m.min, m.max, s.min, s.max)
-
-		this.shoulderInfoBox.innerHTML = `
-      <div class="shoulder-info-content">
-        <div class="shoulder-info-header">
-          <svg class="ui-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--accent-cyan); width: 16px; height: 16px; fill: none; stroke: currentColor; display: inline-block; vertical-align: middle;"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-          <strong>Eixo do Ombro</strong>
-        </div>
-        <p class="shoulder-desc">
-          O ombro é acionado simultaneamente por motores Master e Slave invertido (<code>slave = 180° - master</code>).
-          Para proteger a carcaça e engrenagens contra esforço contrário, o curso efetivo útil resultante é a interseção dos dois limites:
-        </p>
-        <div class="shoulder-result-badge">
-          Curso seguro coordenado: <strong>${eff.min}° a ${eff.max}°</strong>
-          <span class="shoulder-rel-badge">(${this.toRelative(eff.min)} a ${this.toRelative(eff.max)}). Amplitude Útil: ${eff.max - eff.min}°</span>
-        </div>
-      </div>
-    `
+		if (this.shoulderInfoBox) {
+			this.shoulderInfoBox.style.display = "none";
+		}
 	}
 
 	async saveLimits() {
 		this.currentLimits = JSON.parse(JSON.stringify(this.editingLimits))
+		
+		// Derive ombro_slave automatically
+		if (this.currentLimits["ombro_master"]) {
+			const m = this.currentLimits["ombro_master"]
+			this.currentLimits["ombro_slave"] = { min: 180 - m.max, max: 180 - m.min }
+		}
+		
 		localStorage.setItem("arm_custom_limits", JSON.stringify(this.currentLimits))
 
 		try {
