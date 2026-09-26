@@ -6,78 +6,111 @@
 #include <ESPmDNS.h>
 
 /*
-  ============================================================
-  BRAÇO ROBÓTICO ESP32 - FIRMWARE REFATORADO V8.0
-  7 SERVO MOTORES + CONVERSOR SN74HCT245N
-  ÁUDIO I2S: 2x INMP441 (ENTRADA) + MAX98357A (SAÍDA)
-  COMUNICAÇÃO HTTP REST + STREAMING DE ÁUDIO & MOVIMENTO
-  ============================================================
-  
-  Mapeamento de Pinos Padrão (Conforme Descritivo Técnico):
-  Servos MG90S:
-    #1 D13 -> Garra Abertura (HCT245 A1>B1, pinos 2 e 18)
-    #2 D14 -> Garra Rotação  (HCT245 A2>B2, pinos 3 e 17)
-    #3 D18 -> Ombro Slave    (HCT245 A6>B6, pinos 7 e 13)
-    #4 D19 -> Punho          (HCT245 A7>B7, pinos 8 e 12)
+  ==============================================================================
+  BRAÇO ROBÓTICO ESP32 - FIRMWARE V8.1 FAST MOTION
+  ==============================================================================
+  - Arquitetura de 7 Servos Motores com Conversor de Nível Lógico SN74HCT245N
+  - Servos MG90S com dinâmica rápida acelerada (fator de velocidade 2.0x)
+  - Servos MG996R com controle suave e alto torque (fatores 1.25x - 1.35x)
+  - Acumulador fracionário de graus com integração temporal de alta precisão (4ms)
+  - Áudio I2S: 2x Microfones INMP441 (Entrada Estéreo) + DAC MAX98357A (Saída)
+  - API REST HTTP completa, suporte a JSON bruto e Telemetria em tempo real
+  - Persistência não-volátil em Flash NVS (Preferences) de Home, Pinos e Limites
+  ==============================================================================
 
-  Servos MG996R:
-    #1 D27 -> Ombro Master   (HCT245 A3>B3, pinos 4 e 16)
-    #2 D26 -> Cotovelo       (HCT245 A4>B4, pinos 5 e 15)
-    #3 D25 -> Base Rotação   (HCT245 A5>B5, pinos 6 e 14)
+  Mapeamento Padrão de Pinos (Conforme Descritivo Técnico - Esquema v8):
+  ------------------------------------------------------------------------------
+  Servos MG90S (Buffer SN74HCT245N - 3.3V -> 5V):
+    - D13 -> Garra Abertura  (HCT245 A1-IN > B1-OUT, pinos 2 e 18)
+    - D14 -> Garra Rotação   (HCT245 A2-IN > B2-OUT, pinos 3 e 17)
+    - D18 -> Ombro Slave     (HCT245 A6-IN > B6-OUT, pinos 7 e 13)
+    - D19 -> Punho           (HCT245 A7-IN > B7-OUT, pinos 8 e 12)
+
+  Servos MG996R (Buffer SN74HCT245N - 3.3V -> 5V):
+    - D25 -> Base Rotação    (HCT245 A5-IN > B5-OUT, pinos 6 e 14)
+    - D26 -> Cotovelo        (HCT245 A4-IN > B4-OUT, pinos 5 e 15)
+    - D27 -> Ombro Master    (HCT245 A3-IN > B3-OUT, pinos 4 e 16)
 
   Microfones INMP441 (I2S Canal 0 - Entrada):
-    WS  -> GPIO 33
-    SCK -> GPIO 32
-    SD  -> GPIO 35 (Input Only)
+    - WS  -> GPIO 33
+    - SCK -> GPIO 32
+    - SD  -> GPIO 35 (Entrada direta)
 
-  Alto-falante MAX98357A (I2S Canal 1 - Saída):
-    LRC  -> GPIO 21
-    BCLK -> GPIO 22
-    DIN  -> GPIO 23
-  ============================================================
+  Amplificador MAX98357A (I2S Canal 1 - Saída):
+    - LRC  -> GPIO 21
+    - BCLK -> GPIO 22
+    - DIN  -> GPIO 23
+  ==============================================================================
 */
 
 // ==============================================================================
-//  >>> CONFIGURAÇÕES DE REDE & IP DO ESP32 (ALTERE AQUI ANTES DE FAZER O FLASH) <<<
+// 1. CONFIGURAÇÕES DE REDE WI-FI & SERVIDOR WEB
 // ==============================================================================
 
-// 1. CONEXÃO COM ROTEADOR WI-FI OU HOTSPOT (CELULAR 4G/5G OU NOTEBOOK) - MODO STATION
-// Coloque o nome da rede (2.4 GHz) e a senha (ex: Hotspot do seu celular ou do notebook):
-const char* STA_SSID     = "SUA_REDE_WIFI";       // <-- NOME DO WI-FI OU HOTSPOT (2.4GHz)
-const char* STA_PASSWORD = "SUA_SENHA_WIFI";     // <-- SENHA DO WI-FI OU HOTSPOT
-
-// Defina 'false' para obter IP automático via DHCP (RECOMENDADO para Hotspot de Celular/Notebook)
-// Defina 'true' apenas se desejar fixar um IP estático na sua rede local:
+// Modo Station (Conexão a um roteador ou hotspot do celular/notebook)
+const char* STA_SSID     = "SUA_REDE_WIFI";
+const char* STA_PASSWORD = "SUA_SENHA_WIFI";
 const bool  USAR_IP_ESTATICO_STA = false;
 
-// IP Estático (usado somente se USAR_IP_ESTATICO_STA = true):
-IPAddress   ESP32_IP_FIXO(192, 168, 1, 150);      // <--- DEFINE O IP DO ESP32 AQUI (ex: 192.168.1.150)
-IPAddress   ESP32_GATEWAY(192, 168, 1, 1);        // <--- IP DO SEU ROTEADOR (GATEWAY)
-IPAddress   ESP32_SUBNET(255, 255, 255, 0);       // <--- MÁSCARA DE REDE (Padrão: 255.255.255.0)
-IPAddress   ESP32_DNS(8, 8, 8, 8);                // <--- SERVIDOR DNS
+// Definições de IP Estático (utilizadas se USAR_IP_ESTATICO_STA = true)
+IPAddress ESP32_IP_FIXO(192, 168, 1, 150);
+IPAddress ESP32_GATEWAY(192, 168, 1, 1);
+IPAddress ESP32_SUBNET(255, 255, 255, 0);
+IPAddress ESP32_DNS(8, 8, 8, 8);
 
-// 2. REDE WI-FI PRÓPRIA CRIADA PELO ESP32 (MODO ACCESS POINT - AP)
-// Caso o roteador não esteja disponível, o ESP32 gera sua própria rede direta:
-const char* AP_SSID      = "BRACO_ESP32_AP";
-const char* AP_PASSWORD  = "12345678";
-IPAddress   AP_IP(192, 168, 4, 1);                // <--- IP padrão do ESP32 no modo Ponto de Acesso
-IPAddress   AP_GATEWAY(192, 168, 4, 1);
-IPAddress   AP_SUBNET(255, 255, 255, 0);
+// Modo Access Point (Rede direta própria criada pelo ESP32)
+const char* AP_SSID     = "BRACO_ESP32_AP";
+const char* AP_PASSWORD = "12345678";
+IPAddress AP_IP(192, 168, 4, 1);
+IPAddress AP_GATEWAY(192, 168, 4, 1);
+IPAddress AP_SUBNET(255, 255, 255, 0);
 
+// Servidor HTTP REST na porta padrão 80
 WebServer server(80);
+
+// ==============================================================================
+// 2. PARÂMETROS GERAIS DE CINEMÁTICA E DINÂMICA DE MOVIMENTO
 // ==============================================================================
 
-// ============================================================
-// CONFIGURAÇÃO GERAL E SERVOS
-// ============================================================
-
+// Frequência padrão de PWM dos servomotores analógicos/digitais
 const int FREQUENCIA_SERVO_HZ = 50;
-const int VELOCIDADE_PADRAO = 60;
 
-bool sistemaHabilitado = true; // Habilitado para resposta imediata
+// Velocidade base da cinemática em graus por segundo (°/s)
+// v8.0 anterior: 60 °/s  ->  v8.1 Fast Motion: 120 °/s
+const int VELOCIDADE_PADRAO = 120;
+
+// Velocidade de retorno à posição Home
+const int VELOCIDADE_HOME = 100;
+
+// Limite máximo permitido para comandos de velocidade vindos da API
+const int VELOCIDADE_COMANDO_MAX = 300;
+
+// Teto máximo para velocidade efetiva computada por software (°/s).
+// O limite físico real dependerá da tensão de alimentação e torque da carga.
+const float VELOCIDADE_EFETIVA_MAX = 300.0f;
+
+// Intervalo mínimo de atualização da cinemática em milissegundos (4ms = 250 Hz).
+// O sinal PWM continua a 50 Hz, mas o cálculo de interpolação ocorre com alta taxa.
+const unsigned long INTERVALO_CONTROLE_MS = 4;
+
+// Janela máxima de tempo para cálculo de passo (clamp anti-windup de 40ms).
+// Evita que pausas causadas por requisições HTTP ou áudio I2S façam o braço saltar bruscamente.
+const unsigned long TEMPO_MAX_CALCULO_MS = 40;
+
+// Habilitação global do sistema mecânico (quando falso, desconecta saídas PWM)
+bool sistemaHabilitado = true;
+
+// O motor auxiliar do ombro (Ombro Slave) está montado mecanicamente espelhado
 const bool OMBRO_INVERTIDO = true;
+
+// Offset angular opcional de calibração fina entre os dois motores do ombro
 int offsetOmbroSlave = 0;
 
+// ==============================================================================
+// 3. ESTRUTURAS DE DADOS DOS MOTORES E POSIÇÃO HOME
+// ==============================================================================
+
+// Identificadores numéricos dos 7 servomotores
 enum MotorId {
   GARRA_ABERTURA = 0,
   GARRA_ROTACAO,
@@ -89,22 +122,25 @@ enum MotorId {
   TOTAL_MOTORES
 };
 
+// Estrutura com estado dinâmico, limites e parâmetros cinemáticos de cada motor
 struct Motor {
-  Servo driver;
-  const char* nome;
-  uint8_t pino;
-  int anguloMinimo;
-  int anguloMaximo;
-  int pulsoMinimoUs;
-  int pulsoMaximoUs;
-  bool anexado;
-  int anguloAtual;
-  int anguloAlvo;
-  int velocidade;
-  unsigned long ultimoPassoMs;
+  Servo driver;                  // Instância da biblioteca ESP32Servo
+  const char* nome;              // Nome textual do atuador para APIs e logs
+  uint8_t pino;                  // GPIO associado
+  int anguloMinimo;              // Limite angular inferior de segurança (graus)
+  int anguloMaximo;              // Limite angular superior de segurança (graus)
+  int pulsoMinimoUs;             // Largura mínima do pulso PWM em microssegundos (us)
+  int pulsoMaximoUs;             // Largura máxima do pulso PWM em microssegundos (us)
+  bool anexado;                  // Indica se o canal PWM está ativo no pino
+  int anguloAtual;               // Posição angular instantânea inteira
+  int anguloAlvo;                // Posição angular de destino comandada
+  int velocidade;                // Velocidade base comandada (°/s)
+  float fatorVelocidade;         // Multiplicador individual de velocidade (dinâmica rápida)
+  float acumuladorGraus;         // Integrador fracionário de graus para interpolação contínua
+  unsigned long ultimoPassoMs;   // Marca temporal do último cálculo de cinemática
 };
 
-// Posição Home Personalizável
+// Estrutura para armazenamento dos ângulos da posição de repouso (Home)
 struct HomeConfig {
   int base_rotacao;
   int ombro;
@@ -114,26 +150,41 @@ struct HomeConfig {
   int garra_abertura;
 } posHome = { 90, 90, 90, 90, 90, 90 };
 
+// Tabela de inicialização dos 7 motores com calibrações de velocidade e pulsos
 Motor motores[TOTAL_MOTORES] = {
-  { Servo(), "garra_abertura", 13, 45, 135, 1000, 2000, false, 90, 90, VELOCIDADE_PADRAO, 0 },
-  { Servo(), "garra_rotacao",  14, 0,  180, 1000, 2000, false, 90, 90, VELOCIDADE_PADRAO, 0 },
-  { Servo(), "punho",          19, 35, 145, 1000, 2000, false, 90, 90, VELOCIDADE_PADRAO, 0 },
-  { Servo(), "cotovelo",       26, 25, 105,  500, 2500, false, 90, 90, VELOCIDADE_PADRAO, 0 },
-  { Servo(), "ombro_master",   27, 35, 145,  500, 2500, false, 90, 90, VELOCIDADE_PADRAO, 0 },
-  { Servo(), "ombro_slave",    18, 35, 145,  500, 2500, false, 90, 90, VELOCIDADE_PADRAO, 0 },
-  { Servo(), "base_rotacao",   25, 15, 165,  500, 2500, false, 90, 90, VELOCIDADE_PADRAO, 0 }
+  // --- Servos MG90S Independentes (Garra e Punho) ---
+  // Operam com alta agilidade e peso leve, utilizando fator 2.0x (até 240-300 °/s efetivos)
+  { Servo(), "garra_abertura", 13, 45, 135, 1000, 2000, false, 90, 90, VELOCIDADE_PADRAO, 2.0f,  0.0f, 0 },
+  { Servo(), "garra_rotacao",  14,  0, 180, 1000, 2000, false, 90, 90, VELOCIDADE_PADRAO, 2.0f,  0.0f, 0 },
+  { Servo(), "punho",          19, 35, 145, 1000, 2000, false, 90, 90, VELOCIDADE_PADRAO, 2.0f,  0.0f, 0 },
+
+  // --- Servo MG996R Cotovelo ---
+  // Movimenta massa intermediária com alta precisão e torque
+  { Servo(), "cotovelo",       26, 25, 105,  500, 2500, false, 90, 90, VELOCIDADE_PADRAO, 1.35f, 0.0f, 0 },
+
+  // --- Ombro Master (MG996R) + Slave (MG90S) ---
+  // O par conjugado deve obrigatoriamente possuir fatores idênticos para manter sincronia mecânica
+  { Servo(), "ombro_master",   27, 35, 145,  500, 2500, false, 90, 90, VELOCIDADE_PADRAO, 1.25f, 0.0f, 0 },
+  { Servo(), "ombro_slave",    18, 35, 145,  500, 2500, false, 90, 90, VELOCIDADE_PADRAO, 1.25f, 0.0f, 0 },
+
+  // --- Servo MG996R Base Giratória ---
+  // Suporta a inércia de todo o braço articulado
+  { Servo(), "base_rotacao",   25, 15, 165,  500, 2500, false, 90, 90, VELOCIDADE_PADRAO, 1.35f, 0.0f, 0 }
 };
 
-// Declarações prévias
+// Declaração prévia da função de sincronização do ombro
 int calcularAnguloOmbroSlave(int anguloMaster);
 
-// ============================================================
-// PERSISTÊNCIA NÃO-VOLÁTIL (NVS FLASH) DO ESP32
-// ============================================================
+// ==============================================================================
+// 4. PERSISTÊNCIA EM MEMÓRIA FLASH NÃO-VOLÁTIL (NVS / PREFERENCES)
+// ==============================================================================
+
 Preferences prefs;
 
+// Carrega posições Home, limites angulares e pinos salvos na Flash
 void carregarConfiguracoesNVS() {
   prefs.begin("braco_cfg", false);
+
   posHome.base_rotacao   = prefs.getInt("home_b",  posHome.base_rotacao);
   posHome.ombro          = prefs.getInt("home_o",  posHome.ombro);
   posHome.cotovelo       = prefs.getInt("home_c",  posHome.cotovelo);
@@ -146,36 +197,46 @@ void carregarConfiguracoesNVS() {
     snprintf(kMin, sizeof(kMin), "lim_min_%d", i);
     snprintf(kMax, sizeof(kMax), "lim_max_%d", i);
     snprintf(kPin, sizeof(kPin), "pin_%d", i);
+
     motores[i].anguloMinimo = prefs.getInt(kMin, motores[i].anguloMinimo);
     motores[i].anguloMaximo = prefs.getInt(kMax, motores[i].anguloMaximo);
+
     int p = prefs.getInt(kPin, -1);
     if (p >= 0 && p <= 39) {
       motores[i].pino = (uint8_t)p;
     }
   }
+
   prefs.end();
 
-  // Sincroniza posições iniciais dos motores com o Home carregado da NVS
+  // Inicializa o estado angular sincronizado com a posição Home carregada
   motores[BASE_ROTACAO].anguloAtual   = posHome.base_rotacao;
   motores[BASE_ROTACAO].anguloAlvo    = posHome.base_rotacao;
+
   motores[OMBRO_MASTER].anguloAtual   = posHome.ombro;
   motores[OMBRO_MASTER].anguloAlvo    = posHome.ombro;
+
   motores[OMBRO_SLAVE].anguloAtual    = calcularAnguloOmbroSlave(posHome.ombro);
   motores[OMBRO_SLAVE].anguloAlvo     = motores[OMBRO_SLAVE].anguloAtual;
+
   motores[COTOVELO].anguloAtual       = posHome.cotovelo;
   motores[COTOVELO].anguloAlvo        = posHome.cotovelo;
+
   motores[PUNHO].anguloAtual          = posHome.punho;
   motores[PUNHO].anguloAlvo           = posHome.punho;
+
   motores[GARRA_ROTACAO].anguloAtual  = posHome.garra_rotacao;
   motores[GARRA_ROTACAO].anguloAlvo   = posHome.garra_rotacao;
+
   motores[GARRA_ABERTURA].anguloAtual = posHome.garra_abertura;
   motores[GARRA_ABERTURA].anguloAlvo  = posHome.garra_abertura;
 
-  Serial.printf("[NVS] Home Carregada: B=%d, O=%d, C=%d, P=%d, GR=%d, GA=%d\n",
+  Serial.printf("[NVS] Home Carregada: B=%d O=%d C=%d P=%d GR=%d GA=%d\n",
     posHome.base_rotacao, posHome.ombro, posHome.cotovelo,
     posHome.punho, posHome.garra_rotacao, posHome.garra_abertura);
 }
 
+// Salva as coordenadas da posição Home atual na Flash
 void salvarHomeNVS() {
   prefs.begin("braco_cfg", false);
   prefs.putInt("home_b",  posHome.base_rotacao);
@@ -185,11 +246,10 @@ void salvarHomeNVS() {
   prefs.putInt("home_gr", posHome.garra_rotacao);
   prefs.putInt("home_ga", posHome.garra_abertura);
   prefs.end();
-  Serial.printf("[NVS] Home Salva na Flash: B=%d, O=%d, C=%d, P=%d, GR=%d, GA=%d\n",
-    posHome.base_rotacao, posHome.ombro, posHome.cotovelo,
-    posHome.punho, posHome.garra_rotacao, posHome.garra_abertura);
+  Serial.println("[NVS] Coordenadas Home salvas com sucesso.");
 }
 
+// Salva os limites angulares de segurança na Flash
 void salvarLimitesNVS() {
   prefs.begin("braco_cfg", false);
   for (int i = 0; i < TOTAL_MOTORES; i++) {
@@ -200,42 +260,44 @@ void salvarLimitesNVS() {
     prefs.putInt(kMax, motores[i].anguloMaximo);
   }
   prefs.end();
-  Serial.println("[NVS] Limites angulares salvos na Flash!");
+  Serial.println("[NVS] Limites angulares salvos com sucesso.");
 }
 
+// Salva a tabela de pinos GPIO reconfigurados na Flash
 void salvarPinosNVS() {
   prefs.begin("braco_cfg", false);
   for (int i = 0; i < TOTAL_MOTORES; i++) {
     char kPin[16];
     snprintf(kPin, sizeof(kPin), "pin_%d", i);
-    prefs.putInt(kPin, (int)motores[i].pino);
+    prefs.putInt(kPin, motores[i].pino);
   }
   prefs.end();
-  Serial.println("[NVS] Mapeamento de pinos salvo na Flash!");
+  Serial.println("[NVS] Mapeamento de pinos salvo com sucesso.");
 }
 
-// ============================================================
-// CONFIGURAÇÃO DO I2S (MICROFONE INMP441 + ALTO-FALANTE MAX98357A)
-// ============================================================
+// ==============================================================================
+// 5. SUBSISTEMA DE ÁUDIO DIGITAL I2S (INMP441 E MAX98357A)
+// ==============================================================================
 
 #define I2S_SAMPLE_RATE 16000
 
-// Canal 0: Entrada (2x INMP441 Microfones Estéreo)
-#define I2S_MIC_PORT I2S_NUM_0
-#define PIN_I2S_MIC_WS  33
-#define PIN_I2S_MIC_SCK 32
-#define PIN_I2S_MIC_SD  35
+// Canal I2S 0: Microfones Estéreo INMP441 (Entrada RX)
+#define I2S_MIC_PORT     I2S_NUM_0
+#define PIN_I2S_MIC_WS   33
+#define PIN_I2S_MIC_SCK  32
+#define PIN_I2S_MIC_SD   35
 
-// Canal 1: Saída (MAX98357A Amplificador)
-#define I2S_SPK_PORT I2S_NUM_1
+// Canal I2S 1: Amplificador MAX98357A (Saída TX)
+#define I2S_SPK_PORT     I2S_NUM_1
 #define PIN_I2S_SPK_LRC  21
 #define PIN_I2S_SPK_BCLK 22
 #define PIN_I2S_SPK_DIN  23
 
 bool i2sIniciado = false;
 
+// Inicializa e aloca os drivers de barramento I2S para áudio bidirecional
 void configurarI2S() {
-  // 1. Configuração do Microfone INMP441 (I2S_NUM_0)
+  // Configuração do receptor de microfone I2S
   i2s_config_t i2s_mic_config = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
     .sample_rate = I2S_SAMPLE_RATE,
@@ -262,7 +324,7 @@ void configurarI2S() {
     i2s_set_pin(I2S_MIC_PORT, &mic_pins);
   }
 
-  // 2. Configuração do Alto-falante MAX98357A (I2S_NUM_1)
+  // Configuração do transmissor para alto-falante I2S
   i2s_config_t i2s_spk_config = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
     .sample_rate = I2S_SAMPLE_RATE,
@@ -290,28 +352,33 @@ void configurarI2S() {
   }
 
   i2sIniciado = (errMic == ESP_OK && errSpk == ESP_OK);
-  Serial.printf("I2S Inicializado: Mic=%d, Spk=%d\n", errMic, errSpk);
+  Serial.printf("[I2S] Drivers inicializados: Mic=%d, Spk=%d\n", errMic, errSpk);
 }
 
-// ============================================================
-// CONTROLE DE SERVOS
-// ============================================================
+// ==============================================================================
+// 6. CONTROLE DE BAIXO NÍVEL E GERAÇÃO DE SINAIS PWM
+// ==============================================================================
 
+// Garante que o ângulo fornecido permaneça estritamente dentro da faixa segura do motor
 int limitarAngulo(int motorId, int angulo) {
   return constrain(angulo, motores[motorId].anguloMinimo, motores[motorId].anguloMaximo);
 }
 
+// Mapeia o ângulo em graus para o pulso PWM em microssegundos (us)
 int converterAnguloParaPulso(int motorId, int angulo) {
   angulo = limitarAngulo(motorId, angulo);
-  return map(angulo, motores[motorId].anguloMinimo, motores[motorId].anguloMaximo,
+  return map(angulo,
+             motores[motorId].anguloMinimo, motores[motorId].anguloMaximo,
              motores[motorId].pulsoMinimoUs, motores[motorId].pulsoMaximoUs);
 }
 
+// Escreve a largura de pulso diretamente no hardware do temporizador do ESP32
 void escreverAngulo(int motorId, int angulo) {
   int pulso = converterAnguloParaPulso(motorId, angulo);
   motores[motorId].driver.writeMicroseconds(pulso);
 }
 
+// Anexa o sinal PWM no GPIO apenas quando necessário, evitando estresse em repouso
 void anexarMotorSeNecessario(int motorId, int primeiroAngulo) {
   if (motores[motorId].anexado) return;
 
@@ -322,115 +389,167 @@ void anexarMotorSeNecessario(int motorId, int primeiroAngulo) {
   motores[motorId].anexado = true;
   motores[motorId].anguloAtual = primeiroAngulo;
   motores[motorId].anguloAlvo = primeiroAngulo;
+  motores[motorId].acumuladorGraus = 0.0f;
   motores[motorId].ultimoPassoMs = millis();
+
   escreverAngulo(motorId, primeiroAngulo);
 }
 
+// Define o destino e velocidade de um motor com inicialização suave
 void definirAlvoMotor(int motorId, int angulo, int velocidade) {
   angulo = limitarAngulo(motorId, angulo);
-  velocidade = constrain(velocidade, 1, 300);
+  velocidade = constrain(velocidade, 1, VELOCIDADE_COMANDO_MAX);
 
+  // Anexa na posição atual conhecida antes de iniciar a rampa de movimento
   if (!motores[motorId].anexado) {
-    anexarMotorSeNecessario(motorId, angulo);
-    return;
-  }
-
-  // Motores leves MG90S (Garra e Punho) operam com maior dinamismo e velocidade
-  if (motorId == PUNHO || motorId == GARRA_ROTACAO || motorId == GARRA_ABERTURA) {
-    velocidade = constrain(velocidade * 2, 1, 300);
+    anexarMotorSeNecessario(motorId, motores[motorId].anguloAtual);
   }
 
   motores[motorId].anguloAlvo = angulo;
   motores[motorId].velocidade = velocidade;
 }
 
+// ==============================================================================
+// 7. CINEMÁTICA ACOPLADA DO OMBRO (MASTER MG996R + SLAVE MG90S)
+// ==============================================================================
+
+// Calcula a posição espelhada e compensada para o motor auxiliar do ombro
 int calcularAnguloOmbroSlave(int anguloMaster) {
   int anguloSlave = OMBRO_INVERTIDO ? (180 - anguloMaster) : anguloMaster;
   anguloSlave += offsetOmbroSlave;
   return limitarAngulo(OMBRO_SLAVE, anguloSlave);
 }
 
+// Coordena o par do ombro assegurando que nenhum motor exceda seu limite mecânico
 void definirAlvoOmbro(int angulo, int velocidade) {
-  // Acoplamento coordenado dos 2 motores do ombro para evitar forçamento mecânico
-  // Ombro Master (MG996R) e Ombro Slave (MG90S Invertido: slave = 180 - master + offset)
-  // Para que o slave fique em [slave_min, slave_max], o master deve respeitar:
-  // master >= 180 + offset - slave_max  e  master <= 180 + offset - slave_min
-  int effMin = max(motores[OMBRO_MASTER].anguloMinimo, 180 + offsetOmbroSlave - motores[OMBRO_SLAVE].anguloMaximo);
-  int effMax = min(motores[OMBRO_MASTER].anguloMaximo, 180 + offsetOmbroSlave - motores[OMBRO_SLAVE].anguloMinimo);
+  int effMin = max(motores[OMBRO_MASTER].anguloMinimo,
+                   180 + offsetOmbroSlave - motores[OMBRO_SLAVE].anguloMaximo);
+  int effMax = min(motores[OMBRO_MASTER].anguloMaximo,
+                   180 + offsetOmbroSlave - motores[OMBRO_SLAVE].anguloMinimo);
+
   if (effMin > effMax) {
     effMin = motores[OMBRO_MASTER].anguloMinimo;
     effMax = motores[OMBRO_MASTER].anguloMaximo;
   }
+
   int master = constrain(angulo, effMin, effMax);
-  int slave = calcularAnguloOmbroSlave(master);
+  int slave  = calcularAnguloOmbroSlave(master);
+
   definirAlvoMotor(OMBRO_MASTER, master, velocidade);
-  definirAlvoMotor(OMBRO_SLAVE, slave, velocidade);
+  definirAlvoMotor(OMBRO_SLAVE,  slave,  velocidade);
 }
 
+// ==============================================================================
+// 8. MOTOR DE TRAJETÓRIA RÁPIDO COM INTEGRAÇÃO FRACIONÁRIA DE GRAUS
+// ==============================================================================
+
+// Executado no loop() principal para computar passos de movimento contínuo
 void atualizarMovimentos() {
   unsigned long agora = millis();
+
   for (int i = 0; i < TOTAL_MOTORES; i++) {
-    if (!motores[i].anexado || motores[i].anguloAtual == motores[i].anguloAlvo) {
+    // Pula motores desanexados
+    if (!motores[i].anexado) {
       continue;
     }
-    int vel = max(1, motores[i].velocidade);
-    // Para micro-servos (garra e punho), o intervalo mínimo de passo é 2ms
-    bool ehMicroServo = (i == PUNHO || i == GARRA_ROTACAO || i == GARRA_ABERTURA);
-    unsigned long minIntervalo = ehMicroServo ? 2UL : 4UL;
-    unsigned long intervalo = max(minIntervalo, 1000UL / (unsigned long)vel);
-    if (agora - motores[i].ultimoPassoMs < intervalo) {
+
+    // Se já atingiu a meta, zera o acumulador e segue
+    if (motores[i].anguloAtual == motores[i].anguloAlvo) {
+      motores[i].acumuladorGraus = 0.0f;
       continue;
     }
+
+    // Verifica se decorreu a janela mínima de controle (4ms = 250 Hz)
+    unsigned long decorrido = agora - motores[i].ultimoPassoMs;
+    if (decorrido < INTERVALO_CONTROLE_MS) {
+      continue;
+    }
+
+    // Limita delta temporal para evitar trancos após bloqueios momentâneos de rede
+    if (decorrido > TEMPO_MAX_CALCULO_MS) {
+      decorrido = TEMPO_MAX_CALCULO_MS;
+    }
+
     motores[i].ultimoPassoMs = agora;
 
-    // Passo acelerado para micro-servos quando a velocidade solicitada for alta (>= 100)
-    int passo = 1;
-    if (ehMicroServo && vel >= 100) {
-      int diff = abs(motores[i].anguloAlvo - motores[i].anguloAtual);
-      if (diff >= 2) passo = 2;
+    // Calcula velocidade efetiva com o multiplicador individual
+    float velocidadeEfetiva = (float)motores[i].velocidade * motores[i].fatorVelocidade;
+    if (velocidadeEfetiva < 1.0f) {
+      velocidadeEfetiva = 1.0f;
+    }
+    if (velocidadeEfetiva > VELOCIDADE_EFETIVA_MAX) {
+      velocidadeEfetiva = VELOCIDADE_EFETIVA_MAX;
     }
 
-    if (motores[i].anguloAtual < motores[i].anguloAlvo) {
-      motores[i].anguloAtual = min(motores[i].anguloAlvo, motores[i].anguloAtual + passo);
-    } else {
-      motores[i].anguloAtual = max(motores[i].anguloAlvo, motores[i].anguloAtual - passo);
+    // Integração: deslocamento (graus) = velocidade (°/s) * tempo (s)
+    float deslocamento = velocidadeEfetiva * ((float)decorrido / 1000.0f);
+    motores[i].acumuladorGraus += deslocamento;
+
+    // Apenas aplica o passo inteiro quando houver pelo menos 1 grau acumulado
+    int passo = (int)motores[i].acumuladorGraus;
+    if (passo < 1) {
+      continue;
     }
+
+    motores[i].acumuladorGraus -= (float)passo;
+
+    int distancia = abs(motores[i].anguloAlvo - motores[i].anguloAtual);
+    if (passo > distancia) {
+      passo = distancia;
+    }
+
+    // Aplica o passo na direção do alvo
+    if (motores[i].anguloAtual < motores[i].anguloAlvo) {
+      motores[i].anguloAtual += passo;
+    } else {
+      motores[i].anguloAtual -= passo;
+    }
+
+    // Garantia de convergência exata ao chegar no alvo
+    if (abs(motores[i].anguloAlvo - motores[i].anguloAtual) <= 0) {
+      motores[i].anguloAtual = motores[i].anguloAlvo;
+      motores[i].acumuladorGraus = 0.0f;
+    }
+
+    // Atualiza fisicamente o pulso PWM
     escreverAngulo(i, motores[i].anguloAtual);
   }
 }
 
+// Interrompe imediatamente qualquer movimento em andamento fixando o alvo no ponto atual
 void pararMovimentos() {
   for (int i = 0; i < TOTAL_MOTORES; i++) {
     if (motores[i].anexado) {
       motores[i].anguloAlvo = motores[i].anguloAtual;
+      motores[i].acumuladorGraus = 0.0f;
     }
   }
 }
 
+// Desativa os sinais PWM de todos os servos para eliminar consumo e calor
 void desanexarTodos() {
   for (int i = 0; i < TOTAL_MOTORES; i++) {
     if (motores[i].anexado) {
       motores[i].driver.detach();
       motores[i].anexado = false;
     }
+    motores[i].acumuladorGraus = 0.0f;
     pinMode(motores[i].pino, OUTPUT);
     digitalWrite(motores[i].pino, LOW);
   }
 }
 
+// Move todos os atuadores suavemente para as posições Home cadastradas
 void anexarTodosNaHome() {
-  definirAlvoMotor(BASE_ROTACAO, posHome.base_rotacao, 35);
-  definirAlvoOmbro(posHome.ombro, 35);
-  definirAlvoMotor(COTOVELO, posHome.cotovelo, 35);
-  definirAlvoMotor(PUNHO, posHome.punho, 35);
-  definirAlvoMotor(GARRA_ROTACAO, posHome.garra_rotacao, 35);
-  definirAlvoMotor(GARRA_ABERTURA, posHome.garra_abertura, 35);
+  definirAlvoMotor(BASE_ROTACAO,   posHome.base_rotacao,   VELOCIDADE_HOME);
+  definirAlvoOmbro(posHome.ombro,                          VELOCIDADE_HOME);
+  definirAlvoMotor(COTOVELO,       posHome.cotovelo,       VELOCIDADE_HOME);
+  definirAlvoMotor(PUNHO,          posHome.punho,          VELOCIDADE_HOME);
+  definirAlvoMotor(GARRA_ROTACAO,  posHome.garra_rotacao,  VELOCIDADE_HOME);
+  definirAlvoMotor(GARRA_ABERTURA, posHome.garra_abertura, VELOCIDADE_HOME);
 }
 
-// ============================================================
-// REMAPEAMENTO DINÂMICO DE PINOS
-// ============================================================
-
+// Reassocia dinamicamente um servo a um novo pino GPIO sem reiniciar o firmware
 void remapearPino(int motorId, uint8_t novoPino) {
   if (motorId < 0 || motorId >= TOTAL_MOTORES) return;
   if (motores[motorId].pino == novoPino) return;
@@ -439,15 +558,17 @@ void remapearPino(int motorId, uint8_t novoPino) {
     motores[motorId].driver.detach();
     motores[motorId].anexado = false;
   }
+
   motores[motorId].pino = novoPino;
   pinMode(novoPino, OUTPUT);
   digitalWrite(novoPino, LOW);
+
   anexarMotorSeNecessario(motorId, motores[motorId].anguloAtual);
 }
 
-// ============================================================
-// RESPOSTAS JSON E CORS
-// ============================================================
+// ==============================================================================
+// 9. FORMATAÇÃO DE CABEÇALHOS CORS E RESPOSTAS JSON
+// ==============================================================================
 
 void adicionarCors() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
@@ -460,14 +581,14 @@ void enviarJson(int statusHttp, const String& json) {
   server.send(statusHttp, "application/json", json);
 }
 
-// ============================================================
-// ROTAS HTTP
-// ============================================================
-// TELEMETRIA ULTRA-RÁPIDA (30-50Hz) PARA SINCRONISMO 3D
-// ============================================================
+// ==============================================================================
+// 10. ROTAS DA API HTTP REST & TELEMETRIA
+// ==============================================================================
 
+// Telemetria ultra-rápida (30-50 Hz) otimizada para sincronização com render 3D
 void handleTelemetry() {
   adicionarCors();
+
   bool emMovimento = false;
   for (int i = 0; i < TOTAL_MOTORES; i++) {
     if (motores[i].anexado && motores[i].anguloAtual != motores[i].anguloAlvo) {
@@ -475,61 +596,72 @@ void handleTelemetry() {
       break;
     }
   }
+
   char buf[160];
   snprintf(buf, sizeof(buf),
     "{\"sucesso\":true,\"b\":%d,\"o\":%d,\"c\":%d,\"p\":%d,\"gr\":%d,\"ga\":%d,\"m\":%d}",
-    motores[BASE_ROTACAO].anexado ? motores[BASE_ROTACAO].anguloAtual : 90,
-    motores[OMBRO_MASTER].anexado ? motores[OMBRO_MASTER].anguloAtual : 90,
-    motores[COTOVELO].anexado ? motores[COTOVELO].anguloAtual : 90,
-    motores[PUNHO].anexado ? motores[PUNHO].anguloAtual : 90,
-    motores[GARRA_ROTACAO].anexado ? motores[GARRA_ROTACAO].anguloAtual : 90,
+    motores[BASE_ROTACAO].anexado   ? motores[BASE_ROTACAO].anguloAtual   : 90,
+    motores[OMBRO_MASTER].anexado   ? motores[OMBRO_MASTER].anguloAtual   : 90,
+    motores[COTOVELO].anexado       ? motores[COTOVELO].anguloAtual       : 90,
+    motores[PUNHO].anexado          ? motores[PUNHO].anguloAtual          : 90,
+    motores[GARRA_ROTACAO].anexado  ? motores[GARRA_ROTACAO].anguloAtual  : 90,
     motores[GARRA_ABERTURA].anexado ? motores[GARRA_ABERTURA].anguloAtual : 90,
     emMovimento ? 1 : 0
   );
+
   server.send(200, "application/json", buf);
 }
 
+// Retorna o status completo do firmware, rede, áudio e atuadores
 void handleStatus() {
   String json = "{";
   json += "\"sucesso\":true,";
-  json += "\"sistema\":\"braco_robotico_v8\",";
+  json += "\"sistema\":\"braco_robotico_v8_1_fast\",";
   json += "\"habilitado\":" + String(sistemaHabilitado ? "true" : "false") + ",";
   json += "\"i2s_ativo\":" + String(i2sIniciado ? "true" : "false") + ",";
   json += "\"ip\":\"" + WiFi.softAPIP().toString() + "\",";
   json += "\"ip_sta\":\"" + (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "desconectado") + "\",";
   json += "\"ip_ativo\":\"" + (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : WiFi.softAPIP().toString()) + "\",";
+  json += "\"velocidade_padrao\":" + String(VELOCIDADE_PADRAO) + ",";
   json += "\"motores\":[";
+
   for (int i = 0; i < TOTAL_MOTORES; i++) {
     if (i > 0) json += ",";
     json += "{\"nome\":\"" + String(motores[i].nome) + "\",";
     json += "\"pino\":" + String(motores[i].pino) + ",";
     json += "\"anexado\":" + String(motores[i].anexado ? "true" : "false") + ",";
-    json += "\"atual\":" + String(motores[i].anexado ? motores[i].anguloAtual : 90) + ",";
-    json += "\"alvo\":" + String(motores[i].anexado ? motores[i].anguloAlvo : 90) + "}";
+    json += "\"atual\":" + String(motores[i].anguloAtual) + ",";
+    json += "\"alvo\":" + String(motores[i].anguloAlvo) + ",";
+    json += "\"velocidade\":" + String(motores[i].velocidade) + ",";
+    json += "\"fator\":" + String(motores[i].fatorVelocidade, 2) + "}";
   }
+
   json += "]}";
   enviarJson(200, json);
 }
 
+// Rota de movimentação dos eixos (suporta query params, form-data ou JSON no body)
 void handleMove() {
   if (!sistemaHabilitado) {
     enviarJson(409, "{\"sucesso\":false,\"erro\":\"SYSTEM_DISABLED\"}");
     return;
   }
+
   int velocidade = VELOCIDADE_PADRAO;
   if (server.hasArg("speed")) {
     velocidade = server.arg("speed").toInt();
   }
+  velocidade = constrain(velocidade, 1, VELOCIDADE_COMANDO_MAX);
 
-  // Parse dos parâmetros via query/form
-  if (server.hasArg("base_rotacao")) definirAlvoMotor(BASE_ROTACAO, server.arg("base_rotacao").toInt(), velocidade);
-  if (server.hasArg("ombro")) definirAlvoOmbro(server.arg("ombro").toInt(), velocidade);
-  if (server.hasArg("cotovelo")) definirAlvoMotor(COTOVELO, server.arg("cotovelo").toInt(), velocidade);
-  if (server.hasArg("punho")) definirAlvoMotor(PUNHO, server.arg("punho").toInt(), velocidade);
-  if (server.hasArg("garra_rotacao")) definirAlvoMotor(GARRA_ROTACAO, server.arg("garra_rotacao").toInt(), velocidade);
+  // Parâmetros via Query String ou Form-Data
+  if (server.hasArg("base_rotacao"))   definirAlvoMotor(BASE_ROTACAO,   server.arg("base_rotacao").toInt(),   velocidade);
+  if (server.hasArg("ombro"))          definirAlvoOmbro(server.arg("ombro").toInt(), velocidade);
+  if (server.hasArg("cotovelo"))       definirAlvoMotor(COTOVELO,       server.arg("cotovelo").toInt(),       velocidade);
+  if (server.hasArg("punho"))          definirAlvoMotor(PUNHO,          server.arg("punho").toInt(),          velocidade);
+  if (server.hasArg("garra_rotacao"))  definirAlvoMotor(GARRA_ROTACAO,  server.arg("garra_rotacao").toInt(),  velocidade);
   if (server.hasArg("garra_abertura")) definirAlvoMotor(GARRA_ABERTURA, server.arg("garra_abertura").toInt(), velocidade);
 
-  // Suporte robusto a corpo JSON bruto no POST (ex: {"base_rotacao": 90, "speed": 50})
+  // Suporte a Payload JSON Bruto
   if (server.hasArg("plain")) {
     String corpo = server.arg("plain");
     auto extrair = [&](const char* chave) -> int {
@@ -544,19 +676,24 @@ void handleMove() {
       val.trim();
       return val.toInt();
     };
+
     int sp = extrair("\"speed\"");
-    if (sp > 0) velocidade = sp;
-    int v = extrair("\"base_rotacao\""); if (v != -999) definirAlvoMotor(BASE_ROTACAO, v, velocidade);
-    v = extrair("\"ombro\""); if (v != -999) definirAlvoOmbro(v, velocidade);
-    v = extrair("\"cotovelo\""); if (v != -999) definirAlvoMotor(COTOVELO, v, velocidade);
-    v = extrair("\"punho\""); if (v != -999) definirAlvoMotor(PUNHO, v, velocidade);
-    v = extrair("\"garra_rotacao\""); if (v != -999) definirAlvoMotor(GARRA_ROTACAO, v, velocidade);
-    v = extrair("\"garra_abertura\""); if (v != -999) definirAlvoMotor(GARRA_ABERTURA, v, velocidade);
+    if (sp > 0) {
+      velocidade = constrain(sp, 1, VELOCIDADE_COMANDO_MAX);
+    }
+
+    int v = extrair("\"base_rotacao\"");   if (v != -999) definirAlvoMotor(BASE_ROTACAO, v, velocidade);
+    v = extrair("\"ombro\"");              if (v != -999) definirAlvoOmbro(v, velocidade);
+    v = extrair("\"cotovelo\"");           if (v != -999) definirAlvoMotor(COTOVELO, v, velocidade);
+    v = extrair("\"punho\"");              if (v != -999) definirAlvoMotor(PUNHO, v, velocidade);
+    v = extrair("\"garra_rotacao\"");      if (v != -999) definirAlvoMotor(GARRA_ROTACAO, v, velocidade);
+    v = extrair("\"garra_abertura\"");     if (v != -999) definirAlvoMotor(GARRA_ABERTURA, v, velocidade);
   }
 
   enviarJson(200, "{\"sucesso\":true,\"mensagem\":\"Movimento atualizado\"}");
 }
 
+// Dispara o movimento de todos os servos para a posição Home
 void handleHome() {
   if (!sistemaHabilitado) {
     enviarJson(409, "{\"sucesso\":false,\"erro\":\"SYSTEM_DISABLED\"}");
@@ -566,16 +703,16 @@ void handleHome() {
   enviarJson(200, "{\"sucesso\":true,\"mensagem\":\"Movendo para Home\"}");
 }
 
+// Consulta ou redefine os ângulos da posição Home
 void handleHomeConfig() {
   if (server.method() == HTTP_POST) {
-    if (server.hasArg("base_rotacao")) posHome.base_rotacao = server.arg("base_rotacao").toInt();
-    if (server.hasArg("ombro")) posHome.ombro = server.arg("ombro").toInt();
-    if (server.hasArg("cotovelo")) posHome.cotovelo = server.arg("cotovelo").toInt();
-    if (server.hasArg("punho")) posHome.punho = server.arg("punho").toInt();
-    if (server.hasArg("garra_rotacao")) posHome.garra_rotacao = server.arg("garra_rotacao").toInt();
+    if (server.hasArg("base_rotacao"))   posHome.base_rotacao   = server.arg("base_rotacao").toInt();
+    if (server.hasArg("ombro"))          posHome.ombro          = server.arg("ombro").toInt();
+    if (server.hasArg("cotovelo"))       posHome.cotovelo       = server.arg("cotovelo").toInt();
+    if (server.hasArg("punho"))          posHome.punho          = server.arg("punho").toInt();
+    if (server.hasArg("garra_rotacao"))  posHome.garra_rotacao  = server.arg("garra_rotacao").toInt();
     if (server.hasArg("garra_abertura")) posHome.garra_abertura = server.arg("garra_abertura").toInt();
 
-    // Suporte a JSON no corpo HTTP bruto (plain)
     if (server.hasArg("plain")) {
       String corpo = server.arg("plain");
       auto extrair = [&](const char* chave) -> int {
@@ -590,27 +727,31 @@ void handleHomeConfig() {
         val.trim();
         return val.toInt();
       };
-      int v = extrair("\"base_rotacao\""); if (v != -999) posHome.base_rotacao = v;
-      v = extrair("\"ombro\""); if (v != -999) posHome.ombro = v;
-      v = extrair("\"cotovelo\""); if (v != -999) posHome.cotovelo = v;
-      v = extrair("\"punho\""); if (v != -999) posHome.punho = v;
-      v = extrair("\"garra_rotacao\""); if (v != -999) posHome.garra_rotacao = v;
-      v = extrair("\"garra_abertura\""); if (v != -999) posHome.garra_abertura = v;
+
+      int v = extrair("\"base_rotacao\"");   if (v != -999) posHome.base_rotacao = v;
+      v = extrair("\"ombro\"");              if (v != -999) posHome.ombro = v;
+      v = extrair("\"cotovelo\"");           if (v != -999) posHome.cotovelo = v;
+      v = extrair("\"punho\"");              if (v != -999) posHome.punho = v;
+      v = extrair("\"garra_rotacao\"");      if (v != -999) posHome.garra_rotacao = v;
+      v = extrair("\"garra_abertura\"");     if (v != -999) posHome.garra_abertura = v;
     }
 
     salvarHomeNVS();
   }
+
   String json = "{";
-  json += "\"base_rotacao\":" + String(posHome.base_rotacao) + ",";
-  json += "\"ombro\":" + String(posHome.ombro) + ",";
-  json += "\"cotovelo\":" + String(posHome.cotovelo) + ",";
-  json += "\"punho\":" + String(posHome.punho) + ",";
-  json += "\"garra_rotacao\":" + String(posHome.garra_rotacao) + ",";
+  json += "\"base_rotacao\":"   + String(posHome.base_rotacao)   + ",";
+  json += "\"ombro\":"          + String(posHome.ombro)          + ",";
+  json += "\"cotovelo\":"       + String(posHome.cotovelo)       + ",";
+  json += "\"punho\":"          + String(posHome.punho)          + ",";
+  json += "\"garra_rotacao\":"  + String(posHome.garra_rotacao)  + ",";
   json += "\"garra_abertura\":" + String(posHome.garra_abertura);
   json += "}";
+
   enviarJson(200, json);
 }
 
+// Consulta ou reconfigura o mapeamento de pinos GPIO dos servos
 void handlePins() {
   if (server.method() == HTTP_POST) {
     if (server.hasArg("garra_abertura")) remapearPino(GARRA_ABERTURA, server.arg("garra_abertura").toInt());
@@ -621,7 +762,6 @@ void handlePins() {
     if (server.hasArg("cotovelo"))       remapearPino(COTOVELO,       server.arg("cotovelo").toInt());
     if (server.hasArg("ombro_master"))   remapearPino(OMBRO_MASTER,   server.arg("ombro_master").toInt());
 
-    // Suporte a JSON no corpo HTTP bruto (plain)
     if (server.hasArg("plain")) {
       String corpo = server.arg("plain");
       auto extrair = [&](const char* chave) -> int {
@@ -636,26 +776,30 @@ void handlePins() {
         val.trim();
         return val.toInt();
       };
+
       int v = extrair("\"garra_abertura\""); if (v != -999) remapearPino(GARRA_ABERTURA, v);
-      v = extrair("\"garra_rotacao\""); if (v != -999) remapearPino(GARRA_ROTACAO, v);
-      v = extrair("\"ombro_slave\""); if (v != -999) remapearPino(OMBRO_SLAVE, v);
-      v = extrair("\"punho\""); if (v != -999) remapearPino(PUNHO, v);
-      v = extrair("\"base_rotacao\""); if (v != -999) remapearPino(BASE_ROTACAO, v);
-      v = extrair("\"cotovelo\""); if (v != -999) remapearPino(COTOVELO, v);
-      v = extrair("\"ombro_master\""); if (v != -999) remapearPino(OMBRO_MASTER, v);
+      v = extrair("\"garra_rotacao\"");      if (v != -999) remapearPino(GARRA_ROTACAO, v);
+      v = extrair("\"ombro_slave\"");        if (v != -999) remapearPino(OMBRO_SLAVE, v);
+      v = extrair("\"punho\"");              if (v != -999) remapearPino(PUNHO, v);
+      v = extrair("\"base_rotacao\"");       if (v != -999) remapearPino(BASE_ROTACAO, v);
+      v = extrair("\"cotovelo\"");           if (v != -999) remapearPino(COTOVELO, v);
+      v = extrair("\"ombro_master\"");       if (v != -999) remapearPino(OMBRO_MASTER, v);
     }
 
     salvarPinosNVS();
   }
+
   String json = "{";
   for (int i = 0; i < TOTAL_MOTORES; i++) {
     if (i > 0) json += ",";
     json += "\"" + String(motores[i].nome) + "\":" + String(motores[i].pino);
   }
   json += "}";
+
   enviarJson(200, json);
 }
 
+// Consulta ou redefine os limites angulares mínimo e máximo de cada atuador
 void handleLimits() {
   if (server.method() == HTTP_POST) {
     auto atualizarLimite = [&](int motorId, const char* minKey, const char* maxKey) {
@@ -700,8 +844,10 @@ void handleLimits() {
         String kMax = String("\"") + motores[i].nome + "_max\"";
         int vMin = extrair(kMin.c_str());
         int vMax = extrair(kMax.c_str());
+
         if (vMin != -999) motores[i].anguloMinimo = constrain(vMin, 0, 180);
         if (vMax != -999) motores[i].anguloMaximo = constrain(vMax, 0, 180);
+
         if (motores[i].anguloMinimo > motores[i].anguloMaximo) {
           int t = motores[i].anguloMinimo;
           motores[i].anguloMinimo = motores[i].anguloMaximo;
@@ -721,18 +867,15 @@ void handleLimits() {
     json += "\"max\":" + String(motores[i].anguloMaximo) + "}";
   }
   json += "}}";
+
   enviarJson(200, json);
 }
 
+// Callback de recepção de streaming de áudio para o alto-falante MAX98357A via I2S
 void handleAudioUpload() {
-  // Callback chamado durante o recebimento do upload de áudio.
-  // Os chunks PCM recebidos são enviados diretamente para o I2S do alto-falante.
-  if (!i2sIniciado) {
-    return;
-  }
+  if (!i2sIniciado) return;
 
   HTTPUpload& upload = server.upload();
-
   if (upload.status == UPLOAD_FILE_WRITE && upload.currentSize > 0) {
     size_t bytesEscritos = 0;
     esp_err_t resultado = i2s_write(
@@ -744,39 +887,29 @@ void handleAudioUpload() {
     );
 
     if (resultado != ESP_OK || bytesEscritos != upload.currentSize) {
-      Serial.printf(
-        "[Áudio TX] Falha ao escrever no I2S. erro=%d, recebido=%u, escrito=%u\n",
-        resultado,
-        (unsigned int)upload.currentSize,
-        (unsigned int)bytesEscritos
-      );
+      Serial.printf("[Audio TX] Falha I2S. erro=%d recebido=%u escrito=%u\n",
+        resultado, (unsigned int)upload.currentSize, (unsigned int)bytesEscritos);
     }
   }
-
 }
 
+// Finalização da requisição de streaming de áudio
 void handleAudioStream() {
-  // Esta função é chamada uma única vez ao final da requisição HTTP.
-  // O áudio em si é processado por handleAudioUpload().
   if (!i2sIniciado) {
     enviarJson(500, "{\"sucesso\":false,\"erro\":\"I2S_NOT_READY\"}");
     return;
   }
-
   enviarJson(200, "{\"sucesso\":true,\"mensagem\":\"Audio recebido\"}");
 }
 
+// Captura pacote PCM bruto de 16 kHz dos microfones INMP441 e envia via HTTP
 void handleMicCapture() {
   if (!i2sIniciado) {
     enviarJson(500, "{\"sucesso\":false,\"erro\":\"I2S_NOT_READY\"}");
     return;
   }
 
-  // Captura PCM estéreo cru dos microfones INMP441.
-  // 16 kHz x 16 bits x 2 canais = 64000 bytes/s.
-  // Um buffer de 16000 bytes corresponde a aproximadamente 0,25 s.
-  const size_t BUFFER_SIZE = 16000;
-
+  const size_t BUFFER_SIZE = 16000; // ~0.25 segundos de áudio estéreo 16-bit
   uint8_t* audioBuf = (uint8_t*)malloc(BUFFER_SIZE);
   if (!audioBuf) {
     enviarJson(500, "{\"sucesso\":false,\"erro\":\"OUT_OF_MEMORY\"}");
@@ -793,11 +926,8 @@ void handleMicCapture() {
   );
 
   if (resultado != ESP_OK || bytesLidos == 0) {
-    Serial.printf(
-      "[Áudio RX] Falha na captura. erro=%d, bytes=%u\n",
-      resultado,
-      (unsigned int)bytesLidos
-    );
+    Serial.printf("[Audio RX] Erro ao ler microfones. erro=%d bytes=%u\n",
+      resultado, (unsigned int)bytesLidos);
     free(audioBuf);
     enviarJson(500, "{\"sucesso\":false,\"erro\":\"MIC_READ_FAILED\"}");
     return;
@@ -805,9 +935,6 @@ void handleMicCapture() {
 
   adicionarCors();
   server.sendHeader("Content-Disposition", "attachment; filename=\"mic.raw\"");
-
-  // WebServer do Arduino-ESP32 3.x não possui send(code, type, char*, length).
-  // Primeiro informamos o tamanho, enviamos os cabeçalhos e depois o buffer binário.
   server.setContentLength(bytesLidos);
   server.send(200, "application/octet-stream", "");
   server.sendContent(reinterpret_cast<const char*>(audioBuf), bytesLidos);
@@ -815,30 +942,54 @@ void handleMicCapture() {
   free(audioBuf);
 }
 
+// Manipulador de preflight OPTIONS para compatibilidade CORS com navegadores
 void handleOptions() {
   adicionarCors();
   server.send(204);
 }
 
+// Registra todas as rotas da API REST no servidor WebServer
 void configurarRotas() {
-  server.on("/telemetry", HTTP_GET, handleTelemetry);
-  server.on("/status", HTTP_GET, handleStatus);
-  server.on("/move", HTTP_GET, handleMove);
-  server.on("/move", HTTP_POST, handleMove);
-  server.on("/home", HTTP_GET, handleHome);
-  server.on("/home", HTTP_POST, handleHome);
-  server.on("/home/config", HTTP_GET, handleHomeConfig);
-  server.on("/home/config", HTTP_POST, handleHomeConfig);
-  server.on("/pins", HTTP_GET, handlePins);
-  server.on("/pins", HTTP_POST, handlePins);
-  server.on("/limits", HTTP_GET, handleLimits);
-  server.on("/limits", HTTP_POST, handleLimits);
-  server.on("/habilitar", HTTP_GET, []() { sistemaHabilitado = true; enviarJson(200, "{\"sucesso\":true}"); });
-  server.on("/desabilitar", HTTP_GET, []() { sistemaHabilitado = false; desanexarTodos(); enviarJson(200, "{\"sucesso\":true}"); });
-  server.on("/stop", HTTP_GET, []() { pararMovimentos(); enviarJson(200, "{\"sucesso\":true}"); });
-  server.on("/audio/stream", HTTP_POST, handleAudioStream, handleAudioUpload);
-  server.on("/mic/capture", HTTP_GET, handleMicCapture);
+  // Telemetria e Diagnóstico
+  server.on("/telemetry",   HTTP_GET, handleTelemetry);
+  server.on("/status",      HTTP_GET, handleStatus);
 
+  // Controle de Movimento
+  server.on("/move",        HTTP_GET,  handleMove);
+  server.on("/move",        HTTP_POST, handleMove);
+  server.on("/home",        HTTP_GET,  handleHome);
+  server.on("/home",        HTTP_POST, handleHome);
+  server.on("/home/config", HTTP_GET,  handleHomeConfig);
+  server.on("/home/config", HTTP_POST, handleHomeConfig);
+
+  // Configuração de Pinos e Limites Angulares
+  server.on("/pins",        HTTP_GET,  handlePins);
+  server.on("/pins",        HTTP_POST, handlePins);
+  server.on("/limits",      HTTP_GET,  handleLimits);
+  server.on("/limits",      HTTP_POST, handleLimits);
+
+  // Gerenciamento de Alimentação e Emergência
+  server.on("/habilitar",   HTTP_GET, []() {
+    sistemaHabilitado = true;
+    enviarJson(200, "{\"sucesso\":true}");
+  });
+
+  server.on("/desabilitar", HTTP_GET, []() {
+    sistemaHabilitado = false;
+    desanexarTodos();
+    enviarJson(200, "{\"sucesso\":true}");
+  });
+
+  server.on("/stop", HTTP_GET, []() {
+    pararMovimentos();
+    enviarJson(200, "{\"sucesso\":true}");
+  });
+
+  // Áudio I2S (Voz & Microfone)
+  server.on("/audio/stream", HTTP_POST, handleAudioStream, handleAudioUpload);
+  server.on("/mic/capture",  HTTP_GET,  handleMicCapture);
+
+  // Rota de Erro 404 e Tratamento OPTIONS
   server.onNotFound([]() {
     if (server.method() == HTTP_OPTIONS) {
       handleOptions();
@@ -848,30 +999,35 @@ void configurarRotas() {
   });
 }
 
-// ============================================================
-// SETUP E LOOP
-// ============================================================
+// ==============================================================================
+// 11. INICIALIZAÇÃO DO SISTEMA (SETUP)
+// ==============================================================================
 
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("\n=== BRAÇO ROBÓTICO ESP32 V8.0 INICIALIZANDO ===");
 
-  // Carregar configurações salvas na memória flash não-volátil (NVS)
+  Serial.println("\n============================================================");
+  Serial.println("  BRAÇO ROBÓTICO ESP32 - FIRMWARE V8.1 FAST MOTION          ");
+  Serial.println("============================================================");
+
+  // 1. Carrega parâmetros salvos na NVS Flash
   carregarConfiguracoesNVS();
 
-  // Iniciar I2S de áudio
+  // 2. Inicializa barramento de áudio I2S
   configurarI2S();
 
-  // Inicializar Wi-Fi em modo dual (AP + Station)
+  // 3. Inicializa Wi-Fi no modo Dual (Access Point + Station)
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET);
   WiFi.softAP(AP_SSID, AP_PASSWORD);
-  Serial.print("[Wi-Fi AP] Ponto de acesso próprio ativo: ");
+
+  Serial.print("[Wi-Fi AP] Rede direta ativa: ");
   Serial.print(AP_SSID);
   Serial.print(" | IP: ");
   Serial.println(WiFi.softAPIP());
 
+  // 4. Conecta à rede Wi-Fi Station (se configurada)
   if (strlen(STA_SSID) > 0 && strcmp(STA_SSID, "SUA_REDE_WIFI") != 0) {
     if (USAR_IP_ESTATICO_STA) {
       WiFi.config(ESP32_IP_FIXO, ESP32_GATEWAY, ESP32_SUBNET, ESP32_DNS);
@@ -879,39 +1035,52 @@ void setup() {
     WiFi.begin(STA_SSID, STA_PASSWORD);
     Serial.print("[Wi-Fi STA] Conectando a ");
     Serial.print(STA_SSID);
-    
+
     int tentativas = 0;
     while (WiFi.status() != WL_CONNECTED && tentativas < 20) {
       delay(500);
       Serial.print(".");
       tentativas++;
     }
+
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("\n[Wi-Fi STA] Conectado com sucesso!");
-      Serial.print("[Wi-Fi STA] IP ATRIBUÍDO AO ESP32: ");
+      Serial.print("[Wi-Fi STA] IP atribuído ao ESP32: ");
       Serial.println(WiFi.localIP());
     } else {
-      Serial.println("\n[Wi-Fi STA] Falha ao conectar no Wi-Fi Station.");
-      Serial.print("[Wi-Fi STA] Conecte diretamente no AP: ");
-      Serial.print(AP_SSID);
-      Serial.print(" (IP: ");
-      Serial.print(WiFi.softAPIP());
-      Serial.println(")");
+      Serial.println("\n[Wi-Fi STA] Falha na conexão. Conecte pelo AP direto.");
+      Serial.print("[Wi-Fi AP] IP: ");
+      Serial.println(WiFi.softAPIP());
     }
   }
 
-  // Iniciar serviço mDNS (permite acessar http://braco-esp32.local sem precisar saber o IP)
+  // 5. Inicia o respondedor mDNS (permite acessar http://braco-esp32.local)
   if (MDNS.begin("braco-esp32")) {
     MDNS.addService("http", "tcp", 80);
-    Serial.println("[mDNS] Respondedor ativo: http://braco-esp32.local");
+    Serial.println("[mDNS] Disponível em: http://braco-esp32.local");
   }
 
+  // 6. Configura e inicializa o servidor HTTP REST
   configurarRotas();
   server.begin();
-  Serial.println("Servidor HTTP do ESP32 ativo na porta 80.");
+  Serial.println("[HTTP] Servidor REST ativo na porta 80.");
+
+  // 7. Informações de Dinâmica de Movimento
+  Serial.println("[MOVIMENTO] Controle rápido habilitado (v8.1 Fast Motion).");
+  Serial.printf("[MOVIMENTO] Velocidade padrão: %d graus/s\n", VELOCIDADE_PADRAO);
+  Serial.println("[MOVIMENTO] MG90S independentes (Garra/Punho): fator 2.0x");
+  Serial.println("[MOVIMENTO] Cotovelo e Base: fator 1.35x");
+  Serial.println("[MOVIMENTO] Ombro Master e Slave: fator 1.25x sincronizado");
 }
 
+// ==============================================================================
+// 12. LOOP PRINCIPAL (LOOP)
+// ==============================================================================
+
 void loop() {
+  // Atende requisições HTTP REST de forma não-bloqueante
   server.handleClient();
+
+  // Executa ciclo de cinemática e cálculo dos passos dos motores
   atualizarMovimentos();
 }
